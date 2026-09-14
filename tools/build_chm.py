@@ -42,6 +42,9 @@ CALLOUT_KINDS = ("Note", "Tip", "Warning", "Caution", "Important", "Note ")
 # 打开即正常显示中文，不必手动切换"文本编码"。
 UTF8_BOM = b"\xef\xbb\xbf"
 
+# Windows 二进制目录需要的五个系统流（--toc-mode binary 时校验其齐全）
+BINARY_TOC_STREAMS = {"/#TOCIDX", "/#TOPICS", "/#STRINGS", "/#URLTBL", "/#URLSTR"}
+
 # --------------------------------------------------------------------------
 # 目录树
 # --------------------------------------------------------------------------
@@ -198,6 +201,30 @@ def normalize_anchor(anchor: str) -> str:
         return ""
     fragment = anchor.lstrip("#").split("#", 1)[0]
     return f"#{fragment}" if fragment else ""
+
+
+def resolve_build_epoch(repo: str) -> int | None:
+    """构建时刻（秒）：优先 SOURCE_DATE_EPOCH，其次文档源码 HEAD 的提交时间。
+
+    这个值同时用于页脚日期和 `/#SYSTEM` 记录 10 的时间戳，
+    刻意不用"当前时间"：同一份源码必须能构建出字节一致的 CHM，
+    否则模块开头"可复现"这条设计目标就不成立。
+    """
+    epoch = os.environ.get("SOURCE_DATE_EPOCH", "").strip()
+    if epoch.isdigit():
+        return int(epoch)
+    res = subprocess.run(["git", "-C", repo, "log", "-1", "--format=%ct"],
+                         capture_output=True, text=True)
+    stamp = res.stdout.strip()
+    if res.returncode == 0 and stamp.isdigit():
+        return int(stamp)
+    return None
+
+
+def resolve_build_date(repo: str) -> str:
+    """页脚日期（ISO）：由 resolve_build_epoch 换算，缺失时退回今天。"""
+    epoch = resolve_build_epoch(repo)
+    return date.fromtimestamp(epoch).isoformat() if epoch is not None else date.today().isoformat()
 
 
 def split_frontmatter(text: str) -> tuple[dict, str]:
@@ -788,19 +815,17 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 """
 
 
-def wrap_page(title: str, body: str, css: str = "style.css", subtitle: str = "",
-              lang: str = "en", note: str = "已移除视频与图片资源",
-              source_ref: str = "") -> str:
+def wrap_page(title: str, body: str, css: str = "style.css",
+              lang: str = "en", source_ref: str = "", build_date: str = "") -> str:
     version = source_ref[len("release-"):] if source_ref.startswith("release-") else ""
     return PAGE_TEMPLATE.format(
         lang=lang,
         title=html_lib.escape(title),
         css=css,
         body=body,
-        note=note,
         version_label=f" / v{html_lib.escape(version)}" if version else "",
         source_ref=html_lib.escape(source_ref or "本地源码"),
-        build_date=date.today().isoformat(),
+        build_date=html_lib.escape(build_date or date.today().isoformat()),
     )
 
 
@@ -1032,30 +1057,6 @@ def build_hhc(entries: list[TocEntry]) -> str:
     return "\n".join(lines)
 
 
-def build_hhk(entries: list[TocEntry]) -> str:
-    lines = [
-        '<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML//EN">',
-        "<HTML>",
-        "<HEAD>",
-        '<meta name="GENERATOR" content="Microsoft HTML Help Workshop 4.1">',
-        "<!-- Sitemap 1.0 -->",
-        "</HEAD>",
-        "<BODY>",
-        "<UL>",
-    ]
-    for it in collect_entries(entries):
-        if not it.path:
-            continue
-        lines.append("<LI><OBJECT type=\"text/sitemap\">")
-        lines.append(f'<param name="Name" value="{html_lib.escape(it.title, quote=True)}">')
-        lines.append(
-            f'<param name="Local" value="{html_lib.escape(html_name_for_doc(it.path), quote=True)}">'
-        )
-        lines.append("</OBJECT></LI>")
-    lines.append("</UL></BODY></HTML>")
-    return "\n".join(lines)
-
-
 def collect_entries(entries: list[TocEntry]) -> list[TocEntry]:
     out = []
     for e in entries:
@@ -1064,8 +1065,13 @@ def collect_entries(entries: list[TocEntry]) -> list[TocEntry]:
     return out
 
 
-def build_hhp(title: str, chm_name: str, files: list[str], lang: str = "en") -> str:
-    """生成可直接打开的最小 HTML Help 工程，不创建窗口、索引或全文库。"""
+def build_hhp(title: str, chm_name: str, files: list[str], lang: str = "en",
+              binary_toc: bool = True) -> str:
+    """生成可直接打开的最小 HTML Help 工程，不创建窗口、索引或全文库。
+
+    binary_toc=True 时让 hhc.exe/chmcmd 一并写入 Windows 原生二进制目录，
+    与两个编译器自己的默认产物一致（`--toc-mode hhc` 可关闭）。
+    """
     # hhp 是 hhc.exe 按 ANSI 读的，Language 行保持纯 ASCII，避免编码问题
     lang_line = "0x0804 Simplified Chinese" if lang == "zh" else "0x0409 English (United States)"
     lines = [
@@ -1076,7 +1082,7 @@ def build_hhp(title: str, chm_name: str, files: list[str], lang: str = "en") -> 
         "Default topic=index.html",
         f"Title={title}",
         f"Language={lang_line}",
-        "Binary TOC=Yes",
+        f"Binary TOC={'Yes' if binary_toc else 'No'}",
         "Binary Index=No",
         "Full-text search=No",
         "Create CHI file=No",
@@ -1137,9 +1143,11 @@ def main() -> int:
                     help="TiDB 版本分支，如 release-8.5 / release-7.1（默认 master 最新）")
     ap.add_argument("--source-ref", default="",
                     help=argparse.SUPPRESS)
-    ap.add_argument("--toc-mode", default="hhc", choices=["hhc", "binary"],
-                    help="兼容参数；生成文件始终同时包含 toc.hhc 和 Windows "
-                         "hh.exe 所需的二进制目录树")
+    ap.add_argument("--toc-mode", default="binary", choices=["binary", "hhc"],
+                    help="目录形态：binary=额外写入 Windows hh.exe 用的二进制目录树"
+                         "（默认，与 hhc.exe / chmcmd 自己的产物一致，Windows 侧栏"
+                         "才有原生导航）；hhc=只写传统 toc.hhc（Windows 左侧导航为空，"
+                         "个别第三方阅读器侧栏更干净）")
     ap.add_argument("--all", action="store_true", help="收录 TOC.md 中的全部章节")
     ap.add_argument("--lang", default="zh", choices=["zh", "en"],
                     help="zh: 中文文档（GBK 目录 + 0x0804），en: 英文")
@@ -1153,10 +1161,19 @@ def main() -> int:
     repo = os.path.abspath(args.repo)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
-    # 清理旧版本构建器留下的启动脚本，避免复用输出目录时继续误带该文件。
+    want_binary_toc = args.toc_mode == "binary"
+    build_epoch = resolve_build_epoch(repo)
+    build_date = resolve_build_date(repo)
+    # 清理旧版本构建器留下的启动脚本——只删内容确实是本项目旧产物时才动手，
+    # 避免误删输出目录里用户自己的同名文件。
     obsolete_launcher = os.path.join(out, "open-chm.cmd")
     if os.path.isfile(obsolete_launcher):
-        os.remove(obsolete_launcher)
+        with open(obsolete_launcher, "rb") as fh:
+            if b"hh.exe" in fh.read(4096).lower():
+                os.remove(obsolete_launcher)
+                print("      已清理旧版启动脚本 open-chm.cmd")
+            else:
+                print(f"      保留非本工具生成的 {obsolete_launcher}")
 
     if args.ref:
         print(f"[0/6] 切换到版本分支 {args.ref}")
@@ -1231,9 +1248,8 @@ def main() -> int:
                                                  file_set)
         html_body = finalize_html(render_callouts(md_to_html(body, code_blocks)))
         title = meta.get("title") or os.path.basename(path)[:-3].replace("-", " ").title()
-        summary = meta.get("summary", "")
-        page = wrap_page(title, html_body, subtitle=summary, lang=args.lang,
-                         note=media_note, source_ref=source_ref)
+        page = wrap_page(title, html_body, lang=args.lang,
+                         source_ref=source_ref, build_date=build_date)
         pages[html_name_for_doc(path)] = page.encode("utf-8")
     print(f"      移除视频嵌入 {stats['videos']} 处，省略图片 {stats['images']} 张")
     print(f"      模板变量替换 {stats['vars']} 处"
@@ -1276,18 +1292,20 @@ def main() -> int:
                   f"压缩 {img_stats['images']} 张、保留原图 {img_stats['skipped']} 张）")
 
     print("[3/6] 生成封面与资源")
+    print(f"      构建日期 {build_date}（页脚；可用 SOURCE_DATE_EPOCH 覆盖）")
     doc_count = sum(1 for k in pages if k.endswith(".html"))
     cover = build_cover(args.title, entries, doc_count, note=media_note)
     pages["index.html"] = wrap_page(
-        args.title, cover, note=media_note, source_ref=source_ref
+        args.title, cover, source_ref=source_ref, build_date=build_date
     ).encode("utf-8")
     license_body = """<h1>许可与说明</h1>
 <p>本文档内容来源于 PingCAP 官方中文文档仓库 <code>pingcap/docs-cn</code>。</p>
 <p>TiDB 文档内容采用 CC BY-SA 3.0 许可；离线版本仅调整排版、链接、媒体资源和 CHM 打包结构。</p>
 <p>构建工具代码采用 MIT 许可。详细条款请参见项目仓库中的 <code>LICENSE</code> 文件。</p>"""
     pages["license.html"] = wrap_page("许可与说明", license_body,
-                                      lang=args.lang, note=media_note,
-                                      source_ref=source_ref).encode("utf-8")
+                                      lang=args.lang,
+                                      source_ref=source_ref,
+                                      build_date=build_date).encode("utf-8")
     pages["style.css"] = CSS.encode("utf-8")
     pages["preview.html"] = build_preview(
         args.title, entries, len(pages), args.chm
@@ -1309,7 +1327,8 @@ def main() -> int:
     with open(os.path.join(out, "docs.hhp"), "wb") as fh:
         fh.write(
             build_hhp(args.title, args.chm,
-                      [f for f in file_list if f not in skip_in_chm], args.lang)
+                      [f for f in file_list if f not in skip_in_chm], args.lang,
+                      binary_toc=want_binary_toc)
             .encode("gbk")
         )
     for name, data in pages.items():
@@ -1331,10 +1350,11 @@ def main() -> int:
 
     chmcmd_hhp = ""
     if compiler == "chmcmd":
-        # chmcmd 自带 LZX 压缩实现；不写索引，保持侧栏干净
+        # chmcmd 自带 LZX 压缩实现；按 --toc-mode 决定是否附带二进制目录
         chmcmd_hhp = "docs.chmcmd.hhp"
         with open(os.path.join(out, chmcmd_hhp), "wb") as fh:
-            fh.write(build_hhp(args.title, args.chm, chm_files, args.lang).encode("gbk"))
+            fh.write(build_hhp(args.title, args.chm, chm_files, args.lang,
+                               binary_toc=want_binary_toc).encode("gbk"))
         res = subprocess.run(["chmcmd", "--no-html-scan", chmcmd_hhp],
                              cwd=out, capture_output=True)
         if res.returncode != 0 or not os.path.exists(chm_path):
@@ -1350,10 +1370,12 @@ def main() -> int:
             language_id=0x0804 if args.lang == "zh" else 0x0409,
             toc_name="toc.hhc",
             index_name="",  # 不声明索引：避免阅读器把索引条目平铺进目录树
-            # Windows hh.exe 会读取 /#SYSTEM 的二进制目录标志。只写 toc.hhc
-            # 而缺少以下系统流时，部分 Windows 版本会在打开入口阶段报
-            # mk:@MSITStore 无法打开。因此内置打包也始终生成两种目录源。
-            include_binary_toc=True,
+            # 二进制目录由 --toc-mode 决定（默认 binary）。它给 Windows hh.exe
+            # 提供原生左侧导航；toc.hhc 同时保留，供第三方阅读器恢复层级。
+            # 注意：Windows 能否打开并不取决于这几个流——hhc.exe 产物（WiX.chm、
+            # TiDB 官方 7.5 CHM）就没有 /#TOCIDX，真正的打开兼容性由 ITSF 段序决定。
+            include_binary_toc=want_binary_toc,
+            build_time=build_epoch,
         )
         for name in chm_files:
             writer.add_file(name, pages[name])
@@ -1378,20 +1400,22 @@ def main() -> int:
               file=sys.stderr)
         return 1
     expect = {"/" + n for n in file_list if n not in skip_in_chm} | {"/#SYSTEM"}
-    binary_toc_required = {"/#TOCIDX", "/#TOPICS", "/#STRINGS", "/#URLTBL", "/#URLSTR"}
+    binary_toc_required = BINARY_TOC_STREAMS if want_binary_toc else set()
     expect |= binary_toc_required
-    missing = sorted(expect - set(reader.files))
-    ok_toc = True
-    if not (binary_toc_required - set(reader.files)):
-        ok_toc = reader.read("/#TOCIDX")[:4] == struct_pack_blocksize()
-        print(f"      Windows 二进制目录校验 {'OK' if ok_toc else '失败'}")
-    else:
-        ok_toc = False
-        print("      Windows 二进制目录校验 失败")
+    present = set(reader.files)
+    missing = sorted(expect - present)
+    missing_binary = sorted(binary_toc_required - present)
+    content_readable = chm_content_readable(reader)
+    toc_head = None
+    if binary_toc_required and not missing_binary and content_readable:
+        toc_head = reader.read("/#TOCIDX")[:4]
+    ok_toc, toc_note = binary_toc_check(binary_toc_required, present,
+                                        content_readable, toc_head)
+    print(f"      Windows 二进制目录校验 {toc_note}")
     print(f"      文件条目 {len(reader.files)} 个，缺失 {len(missing)} 个")
     if missing:
         print("      缺失：", missing[:10])
-    if chm_content_readable(reader):
+    if content_readable:
         print(f"      index.html 回读 {len(reader.read('/index.html'))} 字节")
     else:
         # LZX 压缩：用 chmcmd 自带的 chmls 解包，与打包前的源文件逐个字节比对
@@ -1404,27 +1428,25 @@ def main() -> int:
                 print("      [失败] 压缩包内容与源文件不一致", file=sys.stderr)
                 return 1
 
-    # 索引文件会污染第三方阅读器侧栏；Windows 原生二进制目录必须保留，
-    # toc.hhc 则供第三方阅读器恢复正确层级。
+    # 索引文件会污染第三方阅读器侧栏；toc.hhc 供第三方阅读器恢复层级，
+    # 默认还会附加 Windows 原生二进制目录供 hh.exe 使用。
     leaked_index = sorted(
         n for n in reader.files
         if n.lower().endswith(".hhk") or n.startswith("/#IDXHDR")
         or n.startswith("/#IVB") or n.startswith("/#INDEX")
     )
-    binary_entries = sorted(
-        n for n in reader.files
-        if n in {"/#TOCIDX", "/#TOPICS", "/#STRINGS", "/#URLTBL", "/#URLSTR"}
-    )
+    binary_entries = sorted(n for n in reader.files if n in BINARY_TOC_STREAMS)
     hygiene_ok = True
     if leaked_index:
         hygiene_ok = False
         print(f"      [失败] CHM 内混入索引文件：{leaked_index}")
-    missing_binary = sorted(binary_toc_required - set(binary_entries))
     if missing_binary:
         hygiene_ok = False
         print(f"      [失败] Windows 二进制目录不完整：缺少 {missing_binary}")
-    else:
+    elif binary_toc_required:
         print("      二进制目录完整：供 Windows hh.exe 启动和导航；toc.hhc 供第三方阅读器")
+    else:
+        print("      目录组成：仅传统 toc.hhc（--toc-mode hhc），无二进制目录与索引")
     if hygiene_ok:
         print("      目录卫生检查 OK：无 *.hhk 索引与额外汇总条目")
 
@@ -1473,6 +1495,30 @@ def chm_content_readable(reader) -> bool:
     except KeyError:
         return False
     return head.startswith((b"\xef\xbb\xbf", b"<", b"\n", b"\r", b" "))
+
+
+def binary_toc_check(required: set[str], present: set[str],
+                     content_readable: bool,
+                     toc_head: bytes | None = None) -> tuple[bool, str]:
+    """判定二进制目录是否合格，返回 (是否通过, 说明文本)。
+
+    required 为空集表示 `--toc-mode hhc`（不写二进制目录）。
+
+    LZX 压缩产物的正文放在 ::DataSpace/Storage/MSCompressed 命名空间里，
+    内置解析器读不出来（content_readable=False），此时只能核对五个流齐全；
+    结构由编译它的 chmcmd 保证，正文另有 chmls 逐字节比对。
+    早期版本在这里无条件回读 /#TOCIDX，于是**任何** chmcmd 构建都会误报失败
+    并把构建脚本的退出码变成 1（build.sh 带 set -e，整条流水线中断）。
+    """
+    missing = sorted(required - present)
+    if missing:
+        return False, f"失败：缺少 {missing}"
+    if not required:
+        return True, "跳过（--toc-mode hhc：只写传统 toc.hhc）"
+    if not content_readable:
+        return True, "OK（LZX 压缩：五个流齐全；正文由 chmls 解包比对）"
+    ok = toc_head == struct_pack_blocksize()
+    return ok, "OK" if ok else "失败（/#TOCIDX 头部不是 0x1000 块大小）"
 
 
 def verify_compressed_content(chm_path: str, out: str,

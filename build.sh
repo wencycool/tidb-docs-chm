@@ -10,10 +10,12 @@
 #   ./build.sh --images --image-profile original   # 含图片但保留原图
 #   ./build.sh --keep-html    # 额外保留 HTML 版与 hhc/hhp 工程文件
 #   ./build.sh --no-compress  # 强制使用未压缩的内置打包器
+#   ./build.sh --toc-mode hhc # 只写传统目录（Windows 侧无目录页签，便于排查侧栏）
 #
 # 产物默认只保留 CHM；HTML/工程文件构建成功后自动清理。
 # 含图片版默认同时做两层压缩：图片 compact 档（宽≤1200 + PNG 256 色）+ CHM LZX。
 # 默认优先用 FPC chmcmd 做 LZX 压缩；未安装时自动使用内置未压缩打包器。
+# 页脚日期取文档源码 HEAD 提交日期，可用 SOURCE_DATE_EPOCH 覆盖以保证可复现。
 # 幂等可重复执行：venv、源码仓库、产物均自动准备/更新。
 set -euo pipefail
 
@@ -29,6 +31,7 @@ BUILD_MODE="both"        # both=无图版+含图版；images=只出含图版；p
 HAS_PROFILE=0
 PRUNE="chm"
 COMPILER="auto"
+TOC_MODE="binary"
 IMAGE_ARGS=()
 while [ "$#" -gt 0 ]; do
     arg="$1"
@@ -48,6 +51,17 @@ while [ "$#" -gt 0 ]; do
                 exit 2
             fi
             COMPILER="$2"
+            shift
+            ;;
+        --toc-mode=*)
+            TOC_MODE="${arg#--toc-mode=}"
+            ;;
+        --toc-mode)
+            if [ "$#" -lt 2 ]; then
+                echo "--toc-mode 需要 binary 或 hhc" >&2
+                exit 2
+            fi
+            TOC_MODE="$2"
             shift
             ;;
         --no-compress)
@@ -103,6 +117,11 @@ done
 case "$COMPILER" in
     auto|builtin|chmcmd) ;;
     *) echo "无效打包器：$COMPILER（应为 auto、builtin 或 chmcmd）" >&2; exit 2 ;;
+esac
+
+case "$TOC_MODE" in
+    binary|hhc) ;;
+    *) echo "无效目录形态：$TOC_MODE（应为 binary 或 hhc）" >&2; exit 2 ;;
 esac
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
@@ -169,6 +188,7 @@ build_target() {
     mkdir -p "$out"
     local args=(--repo "$REPO" --out "$out" --title "$title" --chm "$chm"
                 --prune "$PRUNE" --compiler "$COMPILER" --all --lang zh
+                --toc-mode "$TOC_MODE"
                 --source-ref "$REF")
     if [ "$images" = 1 ]; then
         args+=(--images)

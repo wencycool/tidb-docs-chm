@@ -169,3 +169,67 @@ chmls extractall dist/tidb-docs-cn/tidb-docs-cn.chm /tmp/c   # 压缩包解包�
 主题文件名全部为短 ASCII 哈希 / 模板、页首导航和远程显示依赖为 0 /
 本地链接与标题锚点 0 缺失 / 有序列表全部带层级类型 / LZX 解包字节一致。
 阅读器侧请**先退出或用 ⌘W 关闭旧文档**，再打开新产物。
+
+## 8. 2026-09-14 复评：参照产物比对与回归修复
+
+对 PR #1 做了逐项复评，并补做了一轮**与真实 Windows CHM 的逐字段比对**。
+
+### 8.1 参照产物比对（新增证据）
+
+| CHM | 来源 | Section 0 | 目录偏移 | 写入顺序 | 索引层级 |
+| --- | --- | --- | --- | --- | --- |
+| `WiX.chm` | 微软 `hhc.exe` | `0x60` / `0x18` | `0x78` | 目录 → 正文 | depth 2 / root 11 |
+| `DTFAPI.chm` | 微软 `hhc.exe` | `0x60` / `0x18` | `0x78` | 目录 → 正文 | depth 2 / root 26 |
+| TiDB 官方 7.5 中文 CHM | 上游产物 | `0x60` / `0x18` | `0x78` | 目录 → 正文 | depth 2 / root 30 |
+| `chmcmd`（FPC）单块产物 | 本机实测 | `0x60` / `0x18` | `0x78` | 目录 → 正文 | depth 1 / root -1 |
+| 本项目内置打包器（修复前） | `master` 构建 | `0x60` / `0x984078` | 正文之后 | 正文 → 目录 | depth 2 / root PMGI |
+
+结论：修复后的内置打包器的 ITSF 段序、多块 PMGL/PMGI 根索引、单块 `depth=1/root=-1`、
+PMGL quickref（每 5 项、相对头部偏移、`2*(n//5)+2` 字节）与上述参照物逐字段一致；
+修复前的 `master` 产物在 `windows_layout_ok()` / `windows_directory_ok()` 上三项全失败，
+并声称有二进制目录却五个流全缺——`mk:@MSITStore` 的成因可复现。
+
+对照命令：
+
+```bash
+# 三份参照 CHM 的段序（需自备 WiX / TiDB 官方 CHM）
+python3 - <<'PY'
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+print(struct.unpack_from("<5Q", d, 0x38))          # section0_off/len, dir_off/len, data_off
+PY
+
+# 内置打包器产物的结构与内容核对
+chmls extractall dist/tidb-docs-cn/tidb-docs-cn.chm /tmp/c
+```
+
+### 8.2 本轮修复
+
+1. **回归阻断**：`--compiler chmcmd`（`build.sh` 在装了 FPC 时的默认路径）此前必然
+   `exit 1`。LZX 产物正文在 `MSCompressed` 命名空间，内置解析器读不到 `/#TOCIDX`，
+   旧代码却无条件回读并据此判定失败，`build.sh` 因此在 `set -e` 下中断。
+   现改为：压缩产物只核对五个流齐全，判定逻辑抽成 `binary_toc_check()` 并补了单测。
+2. **`--toc-mode` 恢复可用**：`binary`（默认）写二进制目录，`hhc` 只写 `toc.hhc`；
+   `build_hhp()` 的 `Binary TOC` 随之联动，校验器也接受这种自洽形态。
+3. **文档纠正**：原注释/文档称"Windows `hh.exe` 需要二进制目录流才能打开"，与事实不符
+   （`WiX.chm`、TiDB 官方 7.5 CHM 都没有 `/#TOCIDX` 且能打开，区别只是没有目录页签）。
+4. **构建可复现**：页脚日期与 `/#SYSTEM` 记录 10 的毫秒时间戳改写为 `SOURCE_DATE_EPOCH`
+   或源码 HEAD 提交时间（原实现用"今天"+`time.time()`）。内置打包器两次构建的
+   `sha256` 已核对一致；`chmcmd` 自身会写入时间戳，LZX 产物不保证字节一致。
+5. 清理死参数/死代码（`wrap_page` 的 `note`/`subtitle`、`build_hhk()`）；
+   `open-chm.cmd` 仅在内容确为本项目旧产物时才删除；README 克隆地址改回本仓库。
+
+### 8.3 仍未闭环（需要 Windows 实机）
+
+- **内置（未压缩）打包器产物的 Windows 打开**：本轮只能证明其结构与三份真实 Windows
+  CHM 一致、且可被 FPC `chmls` 独立解包，但没有 Windows 实机打开记录。请在 Windows 上
+  打开一份内置打包器产物（`./build.sh --no-compress`）。
+- **下载来源标记**：若 CHM 是通过浏览器下载的，Windows 会加 `Zone.Identifier`，
+  同样会在打开时被拒绝（文件属性里"解除锁定"或 `Unblock-File`）。这一条与文件格式无关，
+  验收时请区分：先在本地复制一份再打开，确认是格式问题还是来源标记问题。
+- **`/#TOPICS` 第 3 个 dword 的取值约定**：`hhc.exe` 产物解出来指向 `#URLSTR` 字符串，
+  本项目内置写入器存的是 `#URLTBL` 记录偏移，`chmcmd` 两种痕迹都有。它影响 `hh.exe`
+  侧栏解析，不影响能否打开；需要 Windows 实机确认侧栏是否正确。
+- **内置打包器的 `::DataSpace`** 只有 `NameList` + `Storage/Uncompressed/Content`，
+  而 `hhc.exe`/`chmcmd` 产物是 `MSCompressed/Content` 加 `ControlData`、`SpanInfo`、
+  `Transform` 一整套。ITSF 允许未压缩形态，但同样建议随上面那条实机验收一并确认。

@@ -169,8 +169,8 @@ def main() -> int:
     print(f"启动记录  : 默认页 {default_topic or '缺失'}，目录 {contents_file or '缺失'}")
     if not startup_ok:
         ok = False
-        print("  [失败] /#SYSTEM 必须明确声明 index.html 和 toc.hhc，"
-              "否则 Windows 会报 mk:@MSITStore 无法打开")
+        print("  [失败] /#SYSTEM 必须明确声明默认页 index.html 与传统目录 toc.hhc，"
+              "否则 hh.exe 无法确定打开哪一页、从哪棵目录树导航")
     if index_files:
         ok = False
         print("  [失败] 索引文件会被阅读器平铺追加到目录树末尾，必须从 CHM 中移除")
@@ -179,16 +179,20 @@ def main() -> int:
         print("  [失败] 直接打开兼容版不应包含全文搜索数据库")
     missing_binary = sorted(set(BINARY_TOC) - set(binary))
     binary_flag = 11 in records
-    if missing_binary or not binary_flag:
+    if not hhc:
+        ok = False
+        print("  [失败] 缺少 toc.hhc，第三方阅读器可能无法显示正确层级")
+    elif not missing_binary and binary_flag:
+        print("  [通过] toc.hhc 与 Windows 原生二进制目录均完整")
+    elif missing_binary and not binary_flag:
+        # --toc-mode hhc：只写传统目录，/#SYSTEM 也未声称有二进制目录，属自洽形态
+        print("  [提示] 无二进制目录（--toc-mode hhc）：Windows hh.exe 左侧导航为空，"
+              "第三方阅读器仍按 toc.hhc 显示层级")
+    else:
         ok = False
         print(f"  [失败] Windows 原生目录不完整：缺少 {missing_binary or '无'}，"
               f"/#SYSTEM 二进制目录标志 {'存在' if binary_flag else '缺失'}")
-        print("  [失败] 这种不一致会使 Windows hh.exe 报 mk:@MSITStore 无法打开")
-    elif not hhc:
-        ok = False
-        print("  [失败] 缺少 toc.hhc，第三方阅读器可能无法显示正确层级")
-    else:
-        print("  [通过] toc.hhc 与 Windows 原生二进制目录均完整")
+        print("  [失败] 这种不一致会让 Windows hh.exe 的目录导航失效")
 
     if hhc and (root or readable):
         text = read_bytes(hhc[0]).decode("gbk", "replace")

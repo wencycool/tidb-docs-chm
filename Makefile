@@ -11,8 +11,8 @@ help:
 	@echo "make build          纯文字版 + 压缩图片版"
 	@echo "make plain          只生成纯文字版 -> $(CHM)"
 	@echo "make images         含图片版 CHM（compact 档）-> $(CHM_IMAGES)"
-	@echo "make test           渲染回归测试（代码块嵌套 + 全量文档扫描）"
-	@echo "make verify         自检两个 CHM（目录卫生 / 编码）"
+	@echo "make test           渲染回归测试（用例 + 全量文档扫描）"
+	@echo "make verify         自检两个 CHM（结构 / 目录 / 编码 / 链接 / 版式）"
 	@echo "make preview        保留 HTML 版并在浏览器打开预览页"
 	@echo "make clean          删除 dist/（仅构建产物）"
 

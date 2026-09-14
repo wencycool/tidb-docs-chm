@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import struct
@@ -337,6 +338,72 @@ def cases() -> bool:
             pos += 4 + size
         ok &= check("SYSTEM 与目录流一致", "正文",
                     ("无目录流时不声明记录 11", 11 not in codes))
+
+    # 22. --toc-mode hhc 时必须真的不写二进制目录（目录形态可控），
+    # 且 hhp 的 Binary TOC 随之变化。
+    hhp_binary = B.build_hhp("TiDB", "t.chm", ["index.html"], "zh", binary_toc=True)
+    hhp_plain = B.build_hhp("TiDB", "t.chm", ["index.html"], "zh", binary_toc=False)
+    ok &= check("目录形态开关", "正文",
+                ("binary 时声明 Binary TOC=Yes", "Binary TOC=Yes" in hhp_binary),
+                ("hhc 时声明 Binary TOC=No", "Binary TOC=No" in hhp_plain))
+
+    # 23. LZX 压缩产物读不到内容，#TOCIDX 校验必须跳过而不是判失败——
+    # 早期实现无条件回读，导致任何 chmcmd 构建都误报失败、构建脚本退出码 1。
+    streams = B.BINARY_TOC_STREAMS
+    ok2, _ = B.binary_toc_check(streams, set(streams), content_readable=False)
+    ok &= check("LZX 产物不误判二进制目录", "正文",
+                ("压缩且流齐全时通过", ok2),
+                ("压缩时不读内容也能给出结论",
+                 B.binary_toc_check(streams, set(streams), False)[1].startswith("OK")))
+    ok3, _ = B.binary_toc_check(streams, set(streams) - {"/#URLSTR"}, False)
+    ok4, _ = B.binary_toc_check(streams, set(streams), True, b"\x00\x10\x00\x00")
+    ok5, _ = B.binary_toc_check(streams, set(streams), True, b"\x00\x20\x00\x00")
+    ok6, _ = B.binary_toc_check(set(), set(), True, None)
+    ok &= check("二进制目录判定规则", "正文",
+                ("缺流判失败", not ok3),
+                ("未压缩且头部正确判通过", ok4),
+                ("未压缩且头部错误判失败", not ok5),
+                ("--toc-mode hhc 不要求二进制目录", ok6))
+
+    # 24. 页脚构建日期必须可复现：同一份源码（或同一个 SOURCE_DATE_EPOCH）
+    # 必须给出同一个日期，不能随"今天"变化。
+    saved = os.environ.get("SOURCE_DATE_EPOCH")
+    os.environ["SOURCE_DATE_EPOCH"] = "1700000000"
+    try:
+        first = B.resolve_build_date(".")
+        second = B.resolve_build_date(".")
+        epoch = B.resolve_build_epoch(".")
+    finally:
+        if saved is None:
+            os.environ.pop("SOURCE_DATE_EPOCH", None)
+        else:
+            os.environ["SOURCE_DATE_EPOCH"] = saved
+    # 用本地时区换算期望值，避免测试依赖机器时区
+    expected_date = datetime.date.fromtimestamp(1700000000).isoformat()
+    ok &= check("构建日期可复现", "正文",
+                ("SOURCE_DATE_EPOCH 生效且稳定",
+                 first == second == expected_date
+                 and epoch == 1700000000),
+                ("页面日期与构建日期一致",
+                 first in B.wrap_page("t", "b", source_ref="release-7.5", build_date=first)))
+
+    # 25. /#SYSTEM 记录 10 的时间戳必须取自 build_time：早期实现写 time.time()，
+    # 于是同一份源码在不同时刻构建会得到不同字节的 CHM（页脚日期只是其中一半问题）。
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "stamp.chm")
+        writer = B.ChmWriter(build_time=1700000000)
+        writer.add_file("index.html", b"<html>ok</html>")
+        writer.write(path)
+        system = ChmReader(path).read("/#SYSTEM")
+        recs: dict[int, bytes] = {}
+        pos = 4
+        while pos + 4 <= len(system):
+            code, size = struct.unpack_from("<HH", system, pos)
+            recs[code] = system[pos + 4:pos + 4 + size]
+            pos += 4 + size
+        ok &= check("CHM 时间戳可复现", "正文",
+                    ("记录 10 来自 build_time",
+                     10 in recs and struct.unpack("<I", recs[10])[0] == (1700000000 * 1000) % (1 << 32)))
     return ok
 
 

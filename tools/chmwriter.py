@@ -332,6 +332,7 @@ class ChmWriter:
         toc_name: str = "toc.hhc",
         index_name: str = "",
         include_binary_toc: bool = False,
+        build_time: int | None = None,
     ) -> None:
         self.title = title
         self.default_page = default_page
@@ -342,6 +343,9 @@ class ChmWriter:
         # True 时写入 Windows hh.exe 启动和导航所需的二进制目录树
         #（/#TOCIDX 等五个文件）。同时保留 toc.hhc 供第三方阅读器使用。
         self.include_binary_toc = include_binary_toc
+        # /#SYSTEM 记录 10 的时间戳（秒）。给定固定值时输出可字节复现；
+        # 为 None 时用当前时间，仅用于一次性产物。
+        self.build_time = build_time
         self.files: list[tuple[str, bytes]] = []   # ("/path/in/chm", data)
         self.toc: list[TocNode] = []
 
@@ -374,8 +378,9 @@ class ChmWriter:
 
         import time
 
-        # 10: 时间戳（毫秒）
-        rec(10, _u32(int(time.time() * 1000) % (1 << 32)))
+        # 10: 时间戳（毫秒）。固定 build_time 时用它，保证同一份源码可复现构建。
+        stamp = int(self.build_time if self.build_time is not None else time.time())
+        rec(10, _u32((stamp * 1000) % (1 << 32)))
         # 9: 编译器版本串
         rec_str(9, "HHA Version 4.74.8702")
         # 4: 搜索/链接开关结构（36 字节）

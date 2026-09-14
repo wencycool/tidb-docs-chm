@@ -80,7 +80,7 @@ brew install fpc
 ### 3.1 首次构建
 
 ```bash
-git clone https://github.com/RichieLai/tidb-docs-chm.git
+git clone https://github.com/wencycool/tidb-docs-chm.git
 cd tidb-docs-chm
 
 # 默认构建最新版：纯文字版 + 压缩图片版
@@ -150,6 +150,8 @@ git ls-remote --heads https://github.com/pingcap/docs-cn.git "release-*"
 | `--keep-html` | `--keep-all` | 无 | 对应 `--prune=none`，保留所有 HTML 和工程文件 |
 | `--keep-hhp` | 无 | 无 | 对应 `--prune=hhp`，保留 CHM、`docs.hhp` 和 `toc.hhc` |
 | `--only-chm` | `--prune-chm` | 开启 | 对应 `--prune=chm`，只保留 CHM |
+| `--toc-mode=binary` | 可用空格传值 | `binary` | 写 `toc.hhc` 与 Windows 二进制目录（`hh.exe` 有目录页签） |
+| `--toc-mode=hhc` | 可用空格传值 | 无 | 只写 `toc.hhc`，Windows 侧无目录页签 |
 | `--image-profile=compact` | 可用空格传值 | `compact` | 图片最大宽 1200、PNG 256 色、JPEG 质量 82 |
 | `--image-profile=tiny` | 可用空格传值 | 无 | 图片最大宽 1000、PNG 128 色、JPEG 质量 78 |
 | `--image-profile=original` | 可用空格传值 | 无 | 原图入库，不主动重编码 |
@@ -164,6 +166,12 @@ git ls-remote --heads https://github.com/pingcap/docs-cn.git "release-*"
   --image-max-width=1100 \
   --image-colors=192 \
   --image-jpeg-quality=80
+```
+
+页脚日期默认取文档源码 HEAD 的提交日期；需要复刻某次构建时可用环境变量覆盖：
+
+```bash
+SOURCE_DATE_EPOCH=1700000000 ./build.sh release-7.5
 ```
 
 ## 4. 输出目录和文件保留策略
@@ -262,7 +270,7 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 | `--image-colors N` | 档位值 | 覆盖 PNG 色数；`0` 表示保持真彩 |
 | `--image-jpeg-quality N` | 档位值 | 覆盖 JPEG 质量；`0` 表示不重编码 |
 | `--ref BRANCH` | 空 | 执行浅层 `fetch` 并切换到指定分支，例如 `release-7.5` |
-| `--toc-mode hhc\|binary` | `hhc` | 兼容旧命令的参数；当前两种取值都会同时生成 HHC 与 Windows 二进制目录 |
+| `--toc-mode binary\|hhc` | `binary` | `binary` 额外写入 Windows `hh.exe` 用的二进制目录树；`hhc` 只写传统 `toc.hhc`（Windows 侧无目录树），详见第 9.2 节 |
 | `--lang zh\|en` | `zh` | `zh` 使用 GBK 目录和语言 ID `0x0804`；`en` 使用英文语言设置 |
 | `--utf8-bom` | 开启 | 正文 HTML/CSS 写入 UTF-8 BOM，让阅读器默认按 UTF-8 解码 |
 | `--no-utf8-bom` | 关闭 | 不写 BOM，只依赖页面中的 `<meta charset>`；不建议用于中文 CHM |
@@ -313,7 +321,8 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 - `chmcmd` 提供 LZX 压缩，主要压缩 HTML 文本；PNG/JPEG 本身已压缩，因此含图片版
   的二次压缩收益通常小于纯文字版。
 - `chmcmd` 使用单独的临时 HHP 配置，关闭索引、全文搜索和 CHI 文件。
-- 两种打包器都包含传统 `toc.hhc` 和 Windows 二进制目录，最终导航规则一致。
+- 两种打包器都按 `--toc-mode` 生成目录：默认 `binary`，即传统 `toc.hhc` 加
+  Windows 二进制目录；`hhc` 则只写传统目录。
 - 检测到 `chmls` 时，构建器会解包压缩 CHM，并把内容与打包输入逐字节比较。
 
 历史 v7.5 验收中，纯文字版由约 9.9 MB 压缩到约 2.5 MB，`compact` 含图片版由
@@ -335,14 +344,23 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 关闭 UTF-8 BOM 可能导致中文正文在默认编码下乱码，除非有明确测试需求，否则不要使用
 `--no-utf8-bom`。
 
-### 9.2 为什么同时包含两种目录
+### 9.2 两种目录与 `--toc-mode`
 
-传统 `toc.hhc` 适合第三方阅读器，并可供 Windows `hhc.exe` 重编；Windows 自带
-`hh.exe` 需要二进制目录流才能稳定显示原生左侧导航。当前构建器始终同时生成两者，
-并确保目录项都指向同一组短 ASCII 页面。
+传统 `toc.hhc` 适合第三方阅读器，并可供 Windows `hhc.exe` 重编；Windows 自带 `hh.exe`
+的"目录"页签来自 CHM 内的二进制目录流（`/#TOCIDX` 等五个流）。因此：
 
-`--toc-mode` 仅为兼容旧命令保留，`hhc` 和 `binary` 在当前版本不会改变最终目录组成。
-目录卫生依靠“不生成索引和全文数据库”保证，而不是删除 Windows 所需的二进制目录。
+- `--toc-mode binary`（默认）：同时写 `toc.hhc` 和二进制目录。Windows `hh.exe`
+  有原生左侧目录，第三方阅读器仍按 `toc.hhc` 显示层级，两者都指向同一组短 ASCII 页面。
+- `--toc-mode hhc`：只写 `toc.hhc`，`/#SYSTEM` 也不再声明二进制目录。Windows 侧没有
+  目录树但能正常打开、正常阅读正文；适合侧栏行为异常的第三方阅读器排查对比。
+
+需要说明的是，**能否在 Windows 打开并不取决于二进制目录流**：`hhc.exe` 自己生成的
+CHM 可以完全不带 `/#TOCIDX`（例如 WiX 3.14 文档随附的 `WiX.chm`、TiDB 官方 7.5 中文
+CHM 都没有），而同一个 CHM 在 `hh.exe` 里仍然正常打开——区别只是没有目录页签。
+真正决定 `mk:@MSITStore` 能否打开的是 ITSF 段序（见第 11 节与
+[`docs/verification.md`](docs/verification.md)）。
+
+目录卫生依靠"不生成索引文件和全文搜索数据库"保证，而不是删除二进制目录流。
 
 ## 10. Markdown、链接与资源处理
 
@@ -379,7 +397,8 @@ make test
 ```
 
 测试覆盖列表、嵌套代码块、引用块、HTML 容器、模板清理、图片语法、官网链接、标题锚点、
-有序列表类型，以及 Windows CHM 二进制布局和启动目录。
+有序列表类型、目录形态开关、二进制目录判定、构建日期可复现，以及 Windows CHM 二进制
+布局和启动目录。
 
 ### 11.2 成品自检
 
@@ -431,8 +450,14 @@ chmls extractall dist/tidb-docs-7.5/tidb-docs-7.5.chm /tmp/tidb-chm
 - LZX 压缩依赖 Free Pascal `chmcmd`；未安装时只能生成未压缩 CHM。
 - 外部网站内容不会被镜像，外链在无网络环境中无法访问。
 - 不生成关键词索引和全文搜索数据库，以保证目录干净和跨阅读器兼容性。
-- macOS/Linux 无法原生运行 Windows `hh.exe`；代码通过二进制结构校验和 Windows 实机
-  验收保证兼容性。
+- macOS/Linux 无法原生运行 Windows `hh.exe`。仓库内可比对的是**结构证据**：内置写入器
+  的 ITSF 段序、多块 PMGL/PMGI 根索引、quickref 布局都与三份真实 Windows CHM
+  （微软 `hhc.exe` 生成的 `WiX.chm`、`DTFAPI.chm`，以及 TiDB 官方 7.5 中文 CHM）
+  以及 FPC `chmcmd` 的产物逐字段一致。内置打包器产物的 Windows 实机打开仍需人工验收，
+  清单见 [`docs/verification.md`](docs/verification.md) 第 6 节。
+- 构建可复现：页脚日期与 `/#SYSTEM` 记录 10 的时间戳都取 `SOURCE_DATE_EPOCH`（若设置）
+  或文档源码 HEAD 的提交时间，不再使用"当前时间"。内置打包器产物因此可字节复现
+  （两次构建 `sha256` 一致）；`chmcmd` 自己会写时间戳，LZX 产物不保证字节一致。
 - 文档内容和图片压缩结果会随上游分支变化，历史体积与文件数量仅供参考。
 
 ## 14. License 与来源说明
