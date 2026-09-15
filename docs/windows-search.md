@@ -90,6 +90,11 @@ TiDB 文档的关键检索词有相当一部分是 ASCII（`region is unavailabl
 hhc.exe docs.hhp
 ```
 
+默认构建**不会**保留 HTML 与工程文件：`./build.sh` 仍然只产出
+`dist/tidb-docs-cn/`、`dist/tidb-docs-cn-images/` 两个目录里的 CHM（输出位置与
+以前完全一致）。`--keep-html` 只是需要重编时才临时加的一次性参数，它会在同一个
+输出目录里额外留下 HTML 正文、`docs.hhp`、`toc.hhc`，重编完可以删掉。
+
 `hhc.exe` 会重新生成 `docs.hhp`/`toc.hhc` 声明的全部内容，包括它自己的全文索引
 （支持中日韩）与 `/#IDXHDR` 等微软产物专有结构。
 

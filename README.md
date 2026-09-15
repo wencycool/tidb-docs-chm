@@ -371,14 +371,17 @@ main="TiDB 中文文档","toc.hhc","","index.html","index.html",,,,,0x63520,,0x3
 **中文搜索的限制**：`chmcmd` 的全文索引器（Free Pascal）只认 ASCII 的
 `a-z 0-9 _`，中日韩文字一律当分隔符，因此它生成的索引只收录 `TiDB`、`TiKV`、
 `raftstore`、`tidb_mem_quota_query` 这类 ASCII 词，**中文关键词搜不到结果**。
-微软 `hhc.exe` 的索引器支持中日韩，所以需要中文搜索时请保留工程文件
-（`./build.sh --keep-html`，正文 HTML 也在时 `hhc.exe` 才能重编）并在 Windows 上重编：
+微软 `hhc.exe` 的索引器支持中日韩，所以需要中文搜索时请临时保留 HTML 与工程
+文件（`./build.sh --keep-html`，正文 HTML 也在时 `hhc.exe` 才能重编）并在 Windows 上重编：
 
 ```bat
 hhc.exe docs.hhp
 ```
 
-完整说明、成因分析和实机验收清单见 [`docs/windows-search.md`](docs/windows-search.md)。
+默认构建的输出位置与保留策略不变：`./build.sh` 只产出 `dist/tidb-docs-cn/`、
+`dist/tidb-docs-cn-images/` 里的 CHM（`--prune chm`），`--keep-html` 只是需要
+重编时才临时加的参数。完整说明、成因分析和实机验收清单见
+[`docs/windows-search.md`](docs/windows-search.md)。
 
 ## 9. 编码与目录约定
 
