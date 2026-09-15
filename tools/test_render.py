@@ -585,6 +585,59 @@ def cases() -> bool:
                      B.page_bytes(B.wrap_page("SQL 模式", "x", lang="zh",
                                               chm_title=True), "SQL 模式", "zh"))
                  == "SQL 模式".encode("gbk")))
+
+    # 30. TOC.md 是 Markdown，条目名常用反引号标代码（`ADMIN ALTER DDL JOBS`）。
+    #     CHM 目录却是纯文本：toc.hhc 只做 HTML 转义，二进制目录树直接按 GBK 存
+    #     标题，两者都不渲染 Markdown，反引号会原样显示在左侧导航里。必须在解析
+    #     入口脱掉定界符、保留内容（| < > 属于 SQL 语法，不能动）。
+    toc_md = (
+        "- 关于 TiDB\n"
+        "  - [`ADMIN ALTER DDL JOBS`](/sql-statements/sql-statement-admin-alter-ddl.md)\n"
+        "  - [`ADMIN CHECK [TABLE|INDEX]`](/sql-statements/sql-statement-admin-check-table-index.md)\n"
+        "  - [`GRANT <privileges>`](/sql-statements/sql-statement-grant-privileges.md)\n"
+        "  - [使用 `EXPLAIN` 解读执行计划](/explain-walkthrough.md)\n"
+        "  - [AUTO_INCREMENT](/auto-increment.md)\n"
+        "  - 规划集群拓扑\n"
+    )
+    toc = B.parse_toc_md(toc_md)
+    chapter, kids = toc[0], toc[0].children
+    hhc = B.build_hhc(toc)
+    tree_names = []
+
+    def _collect(nodes):
+        for n in nodes:
+            tree_names.append(n.title)
+            _collect(n.children)
+
+    _collect(B.to_chm_toc(toc))
+    ok &= check("目录标题去掉 Markdown 反引号", "正文",
+                ("纯文字分组标题不变", chapter.title == "关于 TiDB"),
+                ("整条代码名去掉反引号", kids[0].title == "ADMIN ALTER DDL JOBS"),
+                ("标题内的方括号不破坏链接解析",
+                 kids[1].title == "ADMIN CHECK [TABLE|INDEX]"
+                 and kids[1].path == "sql-statements/sql-statement-admin-check-table-index.md"),
+                ("SQL 语法字符原样保留", kids[2].title == "GRANT <privileges>"),
+                ("中文里的行内代码只去掉定界符",
+                 kids[3].title == "使用 EXPLAIN 解读执行计划"),
+                ("无 Markdown 的标题不受影响", kids[4].title == "AUTO_INCREMENT"),
+                ("toc.hhc 标题无残留反引号与链接语法",
+                 "`" not in hhc and "](" not in hhc),
+                ("二进制目录标题同样干净",
+                 "`" not in "".join(tree_names) and "](" not in "".join(tree_names)),
+                ("路径未被误改",
+                 f'<param name="Local" value="{B.html_name_for_doc(kids[1].path)}">' in hhc))
+    ok &= check("页面标题同样去掉反引号", "正文",
+                ("前言 title 里的行内代码",
+                 B.page_title_from_meta(
+                     {"title": "通过系统变量 `tidb_read_staleness` 读取历史数据"},
+                     "tidb-read-staleness.md")
+                 == "通过系统变量 tidb_read_staleness 读取历史数据"),
+                ("无前言 title 时回落文件名",
+                 B.page_title_from_meta({}, "explain-walkthrough.md")
+                 == "Explain Walkthrough"),
+                ("无 Markdown 的标题不变",
+                 B.page_title_from_meta({"title": "AUTO_INCREMENT"}, "x.md")
+                 == "AUTO_INCREMENT"))
     return ok
 
 

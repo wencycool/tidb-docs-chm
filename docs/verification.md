@@ -405,3 +405,65 @@ TiDB 官方 7.5 CHM 的 `#STRINGS` 是 UTF-8 字节（其页面也是 UTF-8 无 
 
 Windows 实机确认搜索结果列表标题显示正常（本机只能证明字节层面与
 "hh.exe 按 ANSI 读"一致；目录树用的是同一套 GBK 字节且一直正常显示）。
+
+## 12. 2026-09-15：目录条目名带反引号（Markdown 未渲染）
+
+### 12.1 现象与成因
+
+现象：CHM 左侧目录里出现 `` `ADMIN ALTER DDL JOBS` ``、`` `ALTER DATABASE` `` 这类
+带反引号的条目，而正文标题是正常的 `ADMIN ALTER DDL JOBS`。
+
+成因是**目录是纯文本、正文是渲染后的 HTML**：
+
+- 官方 `TOC.md` 是 Markdown，条目名用行内代码标记 SQL 名称；
+- 正文由 Python-Markdown 渲染，反引号变 `<code>`，所以看不出问题；
+- 目录走 `toc.hhc`（`build_hhc()` 只做 HTML 转义）和 Windows 二进制目录树
+  （`/#TOCIDX`、`/#STRINGS`，标题按 GBK 直接存字节），两者都不渲染 Markdown，
+  反引号原样显示。
+
+### 12.2 修复
+
+在解析/渲染入口统一转成纯文本，下游全部受益：
+
+- 新增 `strip_inline_code()`：用 `` (`+)(.+?)\1 `` 匹配行内代码，**只删定界符、保留内容**。
+  `ADMIN CHECK [TABLE|INDEX]`、`GRANT <privileges>` 里的 `| < >` 属于 SQL 语法，不能动；
+  `AUTO_INCREMENT`、`_tidb_rowid` 这类本来就没有反引号的标识符保持不变。
+- `parse_toc_md()` 用它处理条目名，`toc.hhc`、二进制目录、封面页、预览页因此同时干净。
+- `page_title_from_meta()` 用它处理页面 `<title>`（前言 `title` 或文件名回落），
+  搜索结果表 `#TOPICS`/`#STRINGS` 与窗口标题随之干净（本轮实测 3 个标题：
+  `通过系统变量 tidb_read_staleness 读取历史数据`、
+  `通过系统变量 tidb_external_ts 读取历史数据`、
+  `线上负载与 ADD INDEX 相互影响测试`）。
+- 顺带修掉一个被反引号掩盖的解析缺陷：`TOC_LINK_RE` 原用 `[^\]]*` 匹配标题，
+  标题内部出现 `]` 就整条解析失败（标题里会残留 `[...](...)`，且该条目没有 path、
+  在 `prune_toc()` 里被当成空分组丢弃）。改成贪婪的 `.*` 从右往左找真正的 `](`
+  分界。受影响的 6 条：`ADMIN CHECK [TABLE|INDEX]`、
+  `ADMIN [SET|SHOW|UNSET] BDR ROLE`、`ADMIN SHOW DDL [JOBS|JOB QUERIES]`、
+  `[LOCK|UNLOCK] TABLES`、`SET [NAMES|CHARACTER SET]`、`SHOW [BACKUPS|RESTORES]`。
+
+### 12.3 本机证据
+
+对 `pingcap/docs-cn` @ 当前 `repos/docs-cn` 全量解析：
+
+| 指标 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 条目名残留反引号 / `](` | 470 / 6 | 0 / 0 |
+| `prune_toc()` 收录文档数 | 833 | 839（+6 条方括号标题） |
+
+构建产物核对（`./build.sh` 全量构建后 `chmls extractall` 解包）：
+
+- `toc.hhc` 中反引号 0 处、`](` 0 处；`<param name="Name">` 已是
+  `ADMIN CHECK [TABLE|INDEX]` 等干净文本；
+- `/#STRINGS` 中反引号 0 处（修复前 6 处 / 3 个页面标题），且能查到
+  `ADMIN ALTER DDL JOBS`、`ADMIN CHECK [TABLE|INDEX]`、`SHOW [BACKUPS|RESTORES]`；
+- `verify_chm.py`（纯文字版与含图片版）：指向页面均为 839 个、缺失文件 0 个，
+  两者全部通过（条目数分别为 857、1332）；
+- `test_render.py` 新增用例"目录标题去掉 Markdown 反引号"与
+  "页面标题同样去掉反引号"，覆盖方括号标题、`| < >` 保留、`toc.hhc` 与二进制目录
+  同时干净；`make test` 全绿。
+
+```bash
+.venv/bin/python tools/test_render.py            # 含新增用例与全量扫描
+.venv/bin/python tools/verify_chm.py <chm>
+chmls extractall <chm> /tmp/x && grep -c '`' /tmp/x/toc.hhc   # 期望 0
+```

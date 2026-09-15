@@ -973,7 +973,33 @@ def wrap_page(title: str, body: str, css: str = "style.css",
 # --------------------------------------------------------------------------
 
 TOC_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)[-*+] (?P<content>.+?)\s*$")
-TOC_LINK_RE = re.compile(r"^\[(?P<title>[^\]]*)\]\((?P<url>[^)]+)\)$")
+# 标题里允许出现方括号：官方把 SQL 语法写进条目名，如 `ADMIN CHECK [TABLE|INDEX]`、
+# `SHOW [BACKUPS|RESTORES]`。用贪婪的 .* 从右往左找真正的 `](` 分界，否则 `[^\]]*`
+# 会在标题内部第一个 ] 处断掉，整条链接解析失败、页面也随之丢失。
+TOC_LINK_RE = re.compile(r"^\[(?P<title>.*)\]\((?P<url>[^)]+)\)$")
+
+# 官方文档是 Markdown，条目名/标题常用反引号标代码（如 `ADMIN ALTER DDL JOBS`、
+# 前言的 `使用 EXPLAIN 解读执行计划`）。CHM 里凡是不经过 Markdown 渲染的纯文本出口
+# 都会把反引号原样显示出来：toc.hhc 只做 HTML 转义，二进制目录树（/#TOCIDX、
+# /#STRINGS）和搜索结果表（#TOPICS/#STRINGS）直接按 GBK 存字节。这些出口统一用
+# strip_inline_code() 处理。注意只删定界符、不动内容：`ADMIN CHECK [TABLE|INDEX]`、
+# `GRANT <privileges>` 里的 | < > 是 SQL 语法的一部分，必须原样留下。
+TOC_CODE_SPAN_RE = re.compile(r"(`+)(.+?)\1")
+
+
+def strip_inline_code(text: str) -> str:
+    """去掉 Markdown 行内代码的定界符，保留其中的文字。"""
+    return TOC_CODE_SPAN_RE.sub(r"\2", text)
+
+
+def page_title_from_meta(meta: dict, path: str) -> str:
+    """页面 `<title>`：优先前言 `title`，否则用文件名。
+
+    该值会写进 `#TOPICS`/`#STRINGS`，在 Windows 搜索页签和窗口标题里按纯文本显示，
+    所以和目录名一样要脱掉 Markdown 行内代码的反引号。
+    """
+    fallback = os.path.basename(path)[:-3].replace("-", " ").title()
+    return strip_inline_code(meta.get("title") or fallback)
 
 
 def parse_toc_md(text: str) -> list[TocEntry]:
@@ -993,7 +1019,7 @@ def parse_toc_md(text: str) -> list[TocEntry]:
             title, url = lm.group("title"), lm.group("url")
         else:
             title, url = content, ""
-        entry = TocEntry(title=title.strip(), path=url.lstrip("/"))
+        entry = TocEntry(title=strip_inline_code(title).strip(), path=url.lstrip("/"))
         parent = levels.get(level - 1)
         if parent is not None:
             parent.children.append(entry)
@@ -1517,7 +1543,9 @@ def main() -> int:
                                                  link_index, included, web_prefix,
                                                  file_set)
         html_body = finalize_html(render_callouts(md_to_html(body, code_blocks)))
-        title = meta.get("title") or os.path.basename(path)[:-3].replace("-", " ").title()
+        # 页面 <title> 会进 #TOPICS/#STRINGS，在 Windows 搜索页签和窗口标题里按纯
+        # 文本显示，同样不能留 Markdown 定界符。
+        title = page_title_from_meta(meta, path)
         page = wrap_page(title, html_body, lang=args.lang,
                          source_ref=source_ref, build_date=build_date,
                          chm_title=True)

@@ -472,9 +472,31 @@ CHM 都没有），而同一个 CHM 在 `hh.exe` 里仍然正常打开——区�
 | Markdown 图片和 HTML `<img>` | 含图片版下载或读取后写入本地资源；纯文字版移除显示依赖 |
 | 远程图片下载失败 | 降级为可读文本，不保留必须联网显示的 `<img>` |
 | 视频和播放器 | 删除，不写入 CHM |
+| `TOC.md` 条目名里的行内代码（`` `ADMIN` ``） | 目录树只显示 `ADMIN`：去掉反引号等 Markdown 定界符 |
+| 条目名里的方括号（`` `ADMIN CHECK [TABLE|INDEX]` ``） | 正确解析链接、保留方括号文字，页面照常收录 |
+| 前言 `title` 里的行内代码 | 页面 `<title>`（搜索结果、窗口标题）同样只保留文字 |
 
 离线的含义是：正文和图片版中保留的图片无需联网即可显示。主动点击外部参考链接仍会尝试
 打开浏览器；这不会影响当前 CHM 页面离线阅读。
+
+### 10.1 纯文本出口的 Markdown 定界符
+
+官方文档是 Markdown，条目名和前言 `title` 会用反引号标代码（如
+`` `ADMIN ALTER DDL JOBS` ``、``通过系统变量 `tidb_read_staleness` 读取历史数据``）。
+CHM 里有几处**不经过 Markdown 渲染**的纯文本出口，会把反引号原样显示出来：
+
+| 出口 | 显示位置 |
+| --- | --- |
+| `toc.hhc`、二进制目录树（`/#TOCIDX`、`/#STRINGS`） | 左侧目录树 |
+| `#TOPICS`/`#STRINGS`（页面 `<title>`） | Windows"搜索"结果列表、窗口标题 |
+
+构建时统一用 `strip_inline_code()` 脱去行内代码定界符、只保留其中的文字，因此
+`toc.hhc`、二进制目录、封面页、预览页和页面 `<title>` 拿到的都是干净文本。
+
+只删定界符、不动内容：`ADMIN CHECK [TABLE|INDEX]`、`GRANT <privileges>` 里的
+`| < >` 是 SQL 语法的一部分，必须原样保留。链接解析也按"从右往左找真正的 `](` 分界"
+处理标题内的方括号，否则 `ADMIN CHECK [TABLE|INDEX]` 这类条目会整条解析失败、
+页面随之从 CHM 里消失。
 
 ## 11. 校验方法
 
@@ -492,8 +514,9 @@ make test
 ```
 
 测试覆盖列表、嵌套代码块、引用块、HTML 容器、模板清理、图片语法、官网链接、标题锚点、
-有序列表类型、目录形态开关、二进制目录判定、构建日期可复现，以及 Windows CHM 二进制
-布局和启动目录、正文字号相对化与 Windows 导航字体。`make test` 还会跑一遍 `test_chm_search.py`：它用真实的 `chmcmd`
+有序列表类型、目录形态开关、二进制目录判定、构建日期可复现、目录条目名去 Markdown
+定界符，以及 Windows CHM 二进制布局和启动目录、正文字号相对化与 Windows 导航字体。
+`make test` 还会跑一遍 `test_chm_search.py`：它用真实的 `chmcmd`
 编译含 `TiKV`、`raftstore`、`TiFlash`、`learner` 的小样张，核对全文搜索库、
 `/#SYSTEM` 标志、窗口定义搜索页签位确实都已生成，且没有关键词索引；
 没有安装 `chmcmd` 时该项自动跳过。
