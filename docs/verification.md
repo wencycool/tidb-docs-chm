@@ -588,3 +588,81 @@ SQL / Shell / TOML / YAML / JSON / Go / Python 代码块在 CHM 里全部同色�
   深浅主题下对比度可接受、`.err` 确实不刺眼；
 - 代码块 `pre` 的横向滚动条、行距在大字号档位下与改动前一致（本机只能核对 CSS
   规则与 HTML 结构）。
+
+## 15. 2026-09-15：正文自适应由"分档改字号"改为"整页等比缩放"
+
+### 15.1 现象与成因
+
+上一轮（第 13 节）按窗口宽度分档改 `body` 基准字号（15→24px）：只有文字变大，
+图片/表格/间距比例不变，版式比例走样。正确做法是整页等比缩放：`zoom` 放大
+文字/图片/表格/间距整体，正文字号本身固定。
+
+### 15.2 本轮修改
+
+- 新增 `ADAPTIVE_ZOOM_START_WIDTH=1300`、`ADAPTIVE_ZOOM_STEP_WIDTH=200`、
+  `ADAPTIVE_ZOOM_STEP_PERCENT=10`、`ADAPTIVE_ZOOM_MAX_PERCENT=140`
+ （生成 `ADAPTIVE_ZOOM_STEPS`）：正文区 ≥1300/1500/1700/1900px 时整页
+  110%/120%/130%/140%，`--body-font-size` 只做固定基准（默认 15px）；
+- `adaptive_zoom_steps()` / `adaptive_zoom_css()` 生成媒体查询，每档同时写
+  `body{zoom}` 与 `.page{max-width}`：版心按 `1120/zoom` 收缩
+  （1018/933/862/800px），放大后的渲染宽度恒定在 1190~1216px，无横向滚动条；
+  小窗口（<1300px）保持 100%，同样无横向滚动；
+- 只用 CSS 媒体查询 + `zoom`（MSHTML 自 IE5.5 起支持），不用 JS / `vw` /
+  `clamp()`；旧文档模式整段忽略媒体查询，自动回落 100% 正常阅读；
+- 新增 `--adaptive-zoom`（默认）/ `--no-adaptive-zoom`，`--adaptive-font` /
+  `--no-adaptive-font` 保留为兼容别名，`build.sh` 透传新参数；
+  构建日志打印缩放分档；`verify_chm.py` 报告整页缩放分档，残留旧版
+  `font-size` 分档直接判失败；
+- `.page` 基准 1120px 不变：窗口变宽只等比放大内容，渲染宽度恒定。
+
+### 15.3 本机证据
+
+- `build_css(15)` 含 4 条
+  `@media (min-width:...){body{zoom:...}.page{max-width:...}}`
+  （1300→1.1/1018、1500→1.2/933、1700→1.3/862、1900→1.4/800），媒体查询里
+  无任何 `font-size` 分档；`build_css(15, adaptive=False)` 不含 `@media` 且
+  不含 `zoom:`；
+- 用例断言每档 `(版心+64)*zoom ≤ 视口阈值`，从构造上保证无横向滚动；
+- `make test` 全绿；`verify_chm.py` 对新旧 CSS 的判定已覆盖（旧版判失败）。
+
+### 15.4 仍未闭环
+
+- 需 Windows 实机拖动窗口确认：默认尺寸→最大化整体等比变大、无横向滚动条；
+- 阈值按"大窗口才放大"取整，换屏幕或改系统缩放后可能要在四个常量上微调
+  （测试跟着常量走，不用改两份）。
+
+## 16. 2026-09-16：整页 zoom 自适应导致右侧裁剪、两侧留白不对称，改固定版式
+
+### 16.1 现象与成因
+
+Windows `hh.exe` 实机截图：大窗口下正文右侧被裁掉约半个字、只能看到半边，
+左侧留白巨大，两侧不对称。
+
+根因：`body{zoom:1.x}` 会把 `.page` 的两侧 `auto` 边距一起等比放大。
+未缩放时"边距 + 版心 = 视口"恰好占满，缩放后总量变成 `zoom × 视口`，
+必然溢出；溢出发生在右侧（原点在左），观感就是"左边空一大块、右边被裁"。
+版心补偿（`max-width` 按 `1120/zoom` 收缩）补不回边距放大的部分，
+此路不通，且窄窗口下任何 `zoom>100%` 都会撑出横向滚动条。
+
+### 16.2 本轮修改
+
+- 自适应整体移除，固定版式：`build_css()` 不再接受分档，所有 `ADAPTIVE_ZOOM_*`
+  常量与 `adaptive_zoom_steps()` / `adaptive_zoom_css()` 删除逻辑、
+  仅保留返回空的同名函数以兼容外部 import；`--adaptive-zoom` /
+  `--no-adaptive-zoom` / `--adaptive-font` / `--no-adaptive-font`
+  保留为兼容参数，传入后忽略；`--body-font-size`（默认 15px）与
+  `--nav-font-size`（默认 10pt）保留；
+- `style.css` 无任何 `@media` / `zoom` / `font-size` 分档：`.page` 版心
+  1120px 居中，大窗口两侧对称，窄窗口流式占满；
+- `test_render.py` 用例改为断言固定版式（无 `@media`、无 `zoom:`、版心居中、
+  废弃函数返回空）；`verify_chm.py` 检出任何 `@media` 自适应分档或 `zoom:`
+  直接判失败。
+
+### 16.3 本机证据
+
+- `make test` 全绿；小规模 `builtin` 构建 + `verify_chm.py` 通过，
+  报告"正文版式：固定版式（版心 1120px 居中，不随窗口变化）"。
+
+### 16.4 仍未闭环
+
+- 需 Windows 实机确认：大/小窗口下版心居中对称、无右侧裁剪、无横向滚动条。

@@ -510,32 +510,24 @@ def cases() -> bool:
                  "font-size:clamp(" not in css15
                  and re.search(r"font-size:[^;]*[0-9]vw", css15) is None))
 
-    # 26b. 正文窗口自适应：媒体查询按"正文区宽度"分档放大基准字号，标题/代码/
-    #      表格靠 em 自动跟随；只改 body 一个字，不改任何绝对字号。
-    #      阈值/分档取自 ADAPTIVE_FONT_STEPS，测试跟着常量走，避免写死两份。
-    base, top = B.BODY_FONT_SIZE_RANGE
-    steps = B.ADAPTIVE_FONT_STEPS
-    expect_sizes = B.adaptive_font_sizes(15)
-    want_rules = " ".join(
-        f"@media (min-width:{w}px){{body{{font-size:{s}px}}}}" for w, s in expect_sizes)
+    # 26b. 正文固定版式：无任何媒体查询 / zoom / font-size 分档，不随窗口变化；
+    #      版心 1120px 居中，大窗口两侧留白对称，窄窗口流式占满。
     css_no = B.build_css(15, adaptive=False)
-    ok &= check("正文窗口自适应分档", "正文",
-                ("默认开启且按阈值分档", want_rules and want_rules in css15),
-                ("首档等于普通窗口能触发的宽度",
-                 expect_sizes[0] == (steps[0][0], 15 + steps[0][1])),
-                ("末档封顶到上限", expect_sizes[-1][1] == top),
-                ("分档全部只改 body 字号",
-                 len(re.findall(r"@media \(min-width:\d+px\)\{body\{font-size:\d+px\}\}",
-                                css15)) == len(expect_sizes)),
-                ("关闭自适应后没有任何媒体查询", "@media" not in css_no),
-                ("关闭后仍是同一个基准字号",
-                 f"font-size:15px" in css_no and "font-size:16px" not in css_no),
-                ("分档只增不减", all(s > 15 for _w, s in expect_sizes)
-                 and all(a[0] < b[0] for a, b in zip(expect_sizes, expect_sizes[1:]))),
-                ("基准取到上限时不写媒体查询", B.adaptive_font_css(top) == ""),
-                ("放大基准会整体抬高各档",
-                 B.adaptive_font_sizes(16)[0][1] == 17
-                 and B.adaptive_font_sizes(16)[-1][1] == top))
+    ok &= check("正文固定版式（无自适应）", "正文",
+                ("默认无任何媒体查询", "@media" not in css15),
+                ("无 zoom 分档", "zoom:" not in css15),
+                ("无 font-size 分档",
+                 not re.search(r"@media[^{]*\{body\{font-size:", css15)),
+                ("版心固定 1120px 居中",
+                 ".page{max-width:1120px;margin:0 auto" in css15),
+                ("关闭参数同样固定",
+                 "@media" not in css_no and "zoom:" not in css_no),
+                ("基准字号仍随参数变化",
+                 "font-size:15px" in css_no),
+                ("废弃函数返回空", B.adaptive_zoom_steps() == []
+                 and B.adaptive_zoom_css() == ""
+                 and B.adaptive_font_sizes() == []
+                 and B.adaptive_font_css() == ""))
 
     # 27. Windows 导航字体：Default Font 由语言 + --nav-font-size 决定。
     ok &= check("导航字体取值", "正文",

@@ -311,23 +311,24 @@ def main() -> int:
             ok = False
             print("  [失败] 目录指向的页面不在 CHM 内：", missing[:5])
 
-    # 版式：正文基准字号写在 style.css 里，标题/代码/表格都是相对它的 em
+    # 版式：固定版式。基准字号固定（--body-font-size），无任何自适应分档。
     if root or readable:
         try:
             css_text = read_bytes("/style.css").decode("utf-8-sig", "replace")
         except (KeyError, OSError):
             css_text = ""
         base = re.search(r"body\{[^}]*font-size:([0-9.]+)px", css_text)
-        print("正文字号  : " + (f"{base.group(1)}px（标题/代码/表格按 em 相对缩放）"
+        print("正文字号  : " + (f"{base.group(1)}px固定（标题/代码/表格按 em 相对缩放）"
                                 if base else "未在 style.css 中声明"))
-        # 窗口自适应：媒体查询分档，正文区变宽时逐档放大 body 基准字号
-        steps = re.findall(
-            r"@media \(min-width:(\d+)px\)\{body\{font-size:(\d+)px\}\}", css_text)
-        if steps:
-            detail = " ".join(f"≥{w}→{s}px" for w, s in steps)
-            print(f"窗口自适应: 开启，{len(steps)} 档（{detail}）")
+        stale = re.findall(r"@media\s*\(min-width:", css_text)
+        if stale or "zoom:" in css_text:
+            print(f"  [失败] 残留窗口自适应样式（@media {len(stale)} 处"
+                  f"{'、含 zoom' if 'zoom:' in css_text else ''}），应为固定版式")
+            ok = False
         else:
-            print("窗口自适应: 关闭或基准已到上限，正文恒定字号")
+            fixed = ".page{max-width:1120px;margin:0auto" in css_text.replace(" ", "")
+            print("正文版式  : 固定版式（版心 1120px 居中，不随窗口变化）"
+                  if fixed else "正文版式  : 固定版式（未检出自适应分档）")
 
     html_files = [n for n in names if n.endswith(".html")]
     if (root or readable) and html_files:

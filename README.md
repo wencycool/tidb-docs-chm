@@ -157,8 +157,7 @@ git ls-remote --heads https://github.com/pingcap/docs-cn.git "release-*"
 | `--only-chm` | `--prune-chm` | 开启 | 对应 `--prune=chm`，只保留 CHM |
 | `--toc-mode=binary` | 可用空格传值 | `binary` | 写 `toc.hhc` 与 Windows 二进制目录（`hh.exe` 有目录页签） |
 | `--toc-mode=hhc` | 可用空格传值 | 无 | 只写 `toc.hhc`，Windows 侧无目录页签 |
-| `--body-font-size=N` | 可用空格传值 | `15` | 正文基准字号（px，12~24）；标题/代码/表格按 em 相对缩放 |
-| `--adaptive-font` / `--no-adaptive-font` | 无 | 开启 | 正文按窗口宽度分档放大（纯 CSS 媒体查询）；关闭后恒定字号 |
+| `--body-font-size=N` | 可用空格传值 | `15` | 正文基准字号（px，12~24，固定值）；标题/代码/表格按 em 相对缩放 |
 | `--nav-font-size=N` | 可用空格传值 | `10` | Windows 左侧 Contents/Search 导航字号（pt，8~14），写进 CHM 的 Default Font |
 | `--search=auto` | `--search auto` | `auto` | 有 `chmcmd` 时生成全文搜索库（`hh.exe` 有"搜索"页签），否则关闭并提示 |
 | `--search=fulltext` | `--search fulltext` | 无 | 强制生成全文搜索：必须用 `chmcmd`，否则构建失败，不会静默降级 |
@@ -277,8 +276,7 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 | `--prune MODE` | `none` | `none` 保留全部；`hhp` 保留 CHM/HHP/HHC；`chm` 仅保留 CHM |
 | `--compiler MODE` | `auto` | `auto`、`builtin` 或 `chmcmd`，详见第 8 节 |
 | `--search MODE` | `auto` | `auto`、`fulltext` 或 `none`：Windows"搜索"页签用的全文搜索，详见第 8.3 节 |
-| `--body-font-size N` | `15` | 正文基准字号（px，12~24）；其余字号是相对它的 `em`，详见第 9.3 节 |
-| `--adaptive-font` / `--no-adaptive-font` | 开启 | 正文按窗口宽度分档放大（`--adaptive-font`）/ 恒定字号（`--no-adaptive-font`），详见第 9.3 节 |
+| `--body-font-size N` | `15` | 正文基准字号（px，12~24，固定值）；其余字号是相对它的 `em`，详见第 9.3 节 |
 | `--nav-font-size N` | `10` | Windows 导航窗格字号（pt，8~14）；写进 `.hhp` 的 `Default Font` 与 `/#SYSTEM` 记录 16 |
 | `--image-profile PROFILE` | `compact` | `original`、`compact` 或 `tiny`，详见第 7 节 |
 | `--image-max-width N` | 档位值 | 覆盖图片最大宽度；`0` 表示不缩放 |
@@ -439,35 +437,24 @@ CHM 都没有），而同一个 CHM 在 `hh.exe` 里仍然正常打开——区�
 
 | 区域 | 控制方式 | 参数 |
 | --- | --- | --- |
-| 正文 | `style.css`：`body` 唯一基准字号 + 标题/代码/表格的 `em` | `--body-font-size`（默认 15px） |
-| 正文窗口自适应 | `style.css`：按正文区宽度的媒体查询分档放大基准字号 | `--adaptive-font`（默认开启）/ `--no-adaptive-font` |
+| 正文 | `style.css`：`body` 固定基准字号 + 标题/代码/表格的 `em`，版心 1120px 居中 | `--body-font-size`（默认 15px，固定值） |
 | 左侧 Contents/Search 导航 | CHM 的 `Default Font`（`.hhp` 与 `/#SYSTEM` 记录 16） | `--nav-font-size`（默认 10pt） |
 
 左侧导航是 Windows 原生控件，CSS 管不到它，所以只能通过 `Default Font` 指定
 "字体名,点数,字符集"：中文构建写 `Microsoft YaHei,10,134`，英文构建写
 `Segoe UI,10,0`。两条打包后端（`chmcmd`、builtin）写的是同一个取值，
 `docs.hhp`、`docs.chmcmd.hhp` 与 builtin 的 `/#SYSTEM` 三者一致。
-**它只能给一个固定 pt，不可能随窗口缩放**；能随窗口自适应的是右侧正文。
 
-正文默认按窗口宽度分档放大（`--adaptive-font`），纯 CSS 媒体查询实现，
-不使用 JS / `vw` / `clamp()`：
-
-| 正文区宽度 | <800 | ≥800 | ≥920 | ≥1040 | ≥1160 | ≥1280 | ≥1400 | ≥1520 | ≥1640 | ≥1760 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 基准字号 | 15px | 16px | 17px | 18px | 19px | 20px | 21px | 22px | 23px | 24px |
-
-即"≥800px 起每宽 120px 放大 1px，最多 +9px"。标题/代码/表格都是基准的 `em`，
-所以只改 `body` 一个字就整页等比放大；字号封顶在 `BODY_FONT_SIZE_RANGE` 上限
-（24px）。旧文档模式下媒体查询会被整段忽略，自动回落到基准字号，不会出错。
-不想要这种分档时：
+正文是固定版式，不随窗口变化：大窗口下版心居中、两侧留白对称，窄窗口下
+自动流式占满、无横向滚动条。正文字号本身固定为 `--body-font-size`
+（默认 15px）。历史上的两版窗口自适应（分档改 `font-size`、分档改 `zoom`）
+已移除：前者只放大文字、版式比例走样，后者会把两侧 `auto` 边距一起放大、
+导致右侧内容被裁、两侧留白不对称。`--adaptive-zoom` / `--no-adaptive-zoom` /
+`--adaptive-font` / `--no-adaptive-font` 保留为兼容参数，传入后忽略。
 
 ```bash
-./build.sh --no-adaptive-font            # 正文恒定字号
-./build.sh --body-font-size 16 --nav-font-size 11   # 内网机器仍偏小时整体调大一档
+./build.sh --body-font-size 16 --nav-font-size 11   # 正文基准/导航整体调大一档
 ```
-
-`hh.exe` 的视口宽度 = 窗口宽 − 左侧导航宽度，所以上面的阈值会略晚于窗口尺寸触发。
-`make preview` 生成的预览页把正文放进 iframe，本地拖动浏览器窗口即可看到分档效果。
 
 完整说明、Windows 实机测试矩阵与检查清单见
 [`docs/windows-font-dpi.md`](docs/windows-font-dpi.md)。
@@ -568,7 +555,7 @@ make test
 
 测试覆盖列表、嵌套代码块、引用块、HTML 容器、模板清理、图片语法、官网链接、标题锚点、
 有序列表类型、目录形态开关、二进制目录判定、构建日期可复现、目录条目名去 Markdown
-定界符，以及 Windows CHM 二进制布局和启动目录、正文字号相对化与 Windows 导航字体。
+定界符，以及 Windows CHM 二进制布局和启动目录、正文字号相对化、固定版式与 Windows 导航字体。
 代码语法高亮另有一组用例：SQL token 区分、HTML 特殊字符、列表/引用内的 SQL、
 未知语言与无语言回落、TiDB 专有 SQL 与 Hint、语言别名与统计、无 Pygments 与
 "lexer 改动内容"两条退化路径；全量扫描还会逐块核对"高亮后的可见文本 == 原始代码"。
@@ -606,7 +593,8 @@ make test
 - LZX 解包内容是否与打包输入一致。
 - 全文搜索三要件是否一致：`/$FIftiMain`、`/#SYSTEM` 全文搜索标志、
   `/#WINDOWS` 窗口定义的搜索页签位（`--expect-search yes|no|auto`）。
-- 正文基准字号（`style.css`）与 Windows 导航字体（`/#SYSTEM` 记录 16）是否写入。
+- 正文基准字号与固定版式（`style.css` 无自适应分档）
+  与 Windows 导航字体（`/#SYSTEM` 记录 16）是否写入。
 
 ### 11.3 可选的独立工具检查
 
