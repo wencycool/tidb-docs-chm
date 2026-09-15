@@ -11,10 +11,15 @@
 #   ./build.sh --keep-html    # 额外保留 HTML 版与 hhc/hhp 工程文件
 #   ./build.sh --no-compress  # 强制使用未压缩的内置打包器
 #   ./build.sh --toc-mode hhc # 只写传统目录（Windows 侧无目录页签，便于排查侧栏）
+#   ./build.sh --search fulltext  # 必须生成 Windows"搜索"页签（缺 chmcmd 就报错退出）
+#   ./build.sh --no-search    # 不写全文搜索库（hh.exe 没有"搜索"页签）
 #
 # 产物默认只保留 CHM；HTML/工程文件构建成功后自动清理。
 # 含图片版默认同时做两层压缩：图片 compact 档（宽≤1200 + PNG 256 色）+ CHM LZX。
 # 默认优先用 FPC chmcmd 做 LZX 压缩；未安装时自动使用内置未压缩打包器。
+# Windows"搜索"页签需要全文搜索库（chmcmd 生成）+ 窗口定义里的搜索页签位：
+# --search auto（默认）在 chmcmd 可用时开启，否则关闭并打印提示；
+# --search fulltext 是强约束，缺 chmcmd 直接失败，不会静默退化成没有搜索。
 # 页脚日期取文档源码 HEAD 提交日期，可用 SOURCE_DATE_EPOCH 覆盖以保证可复现。
 # 幂等可重复执行：venv、源码仓库、产物均自动准备/更新。
 set -euo pipefail
@@ -32,6 +37,7 @@ HAS_PROFILE=0
 PRUNE="chm"
 COMPILER="auto"
 TOC_MODE="binary"
+SEARCH="auto"            # auto=chmcmd 可用时开启全文搜索；fulltext=强制；none=关闭
 IMAGE_ARGS=()
 while [ "$#" -gt 0 ]; do
     arg="$1"
@@ -55,6 +61,20 @@ while [ "$#" -gt 0 ]; do
             ;;
         --toc-mode=*)
             TOC_MODE="${arg#--toc-mode=}"
+            ;;
+        --search=*)
+            SEARCH="${arg#--search=}"
+            ;;
+        --search)
+            if [ "$#" -lt 2 ]; then
+                echo "--search 需要 auto、fulltext 或 none" >&2
+                exit 2
+            fi
+            SEARCH="$2"
+            shift
+            ;;
+        --no-search)
+            SEARCH="none"
             ;;
         --toc-mode)
             if [ "$#" -lt 2 ]; then
@@ -124,6 +144,16 @@ case "$TOC_MODE" in
     *) echo "无效目录形态：$TOC_MODE（应为 binary 或 hhc）" >&2; exit 2 ;;
 esac
 
+case "$SEARCH" in
+    auto|fulltext|none) ;;
+    *) echo "无效搜索模式：$SEARCH（应为 auto、fulltext 或 none）" >&2; exit 2 ;;
+esac
+
+if [ "$SEARCH" = "fulltext" ] && [ "$COMPILER" = "builtin" ]; then
+    echo "--search fulltext 需要 chmcmd，不能与 --no-compress / --compiler=builtin 同时使用" >&2
+    exit 2
+fi
+
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
 # 未显式指定图片档位时用 compact（体积约为原图的 1/3，文字仍清晰）
@@ -188,7 +218,7 @@ build_target() {
     mkdir -p "$out"
     local args=(--repo "$REPO" --out "$out" --title "$title" --chm "$chm"
                 --prune "$PRUNE" --compiler "$COMPILER" --all --lang zh
-                --toc-mode "$TOC_MODE"
+                --toc-mode "$TOC_MODE" --search "$SEARCH"
                 --source-ref "$REF")
     if [ "$images" = 1 ]; then
         args+=(--images)
@@ -209,16 +239,36 @@ build_target() {
         log "未找到 7zz，跳过独立校验（可选: brew install p7zip）"
     fi
 
-    log "产物自检（目录卫生 / 编码 / 压缩）"
-    "$PY" "$ROOT/tools/verify_chm.py" "$chm_path" || exit 1
+    log "产物自检（目录卫生 / 编码 / 压缩 / 全文搜索）"
+    # --expect-search 反映本次构建意图：声明要搜索就必须真的带上搜索结构
+    local expect_search="auto"
+    case "$SEARCH" in
+        fulltext) expect_search="yes" ;;
+        none) expect_search="no" ;;
+        auto)
+            if [ "$COMPILER" = "chmcmd" ] \
+                || { [ "$COMPILER" = "auto" ] && command -v chmcmd >/dev/null 2>&1; }; then
+                expect_search="yes"
+            fi
+            ;;
+    esac
+    "$PY" "$ROOT/tools/verify_chm.py" --expect-search "$expect_search" "$chm_path" || exit 1
 
     log "完成：${title}"
     echo "  离线文档 : $chm_path"
+    if [ "$expect_search" = "yes" ]; then
+        echo "  搜索页签 : Windows hh.exe 左侧有\"搜索\"页签（全文索引只收 ASCII 词，"
+        echo "             中文关键词要用 hhc.exe 重编 docs.hhp，需 --keep-html 保留 HTML）"
+    elif [ "$SEARCH" = "none" ]; then
+        echo "  搜索页签 : 未生成（--no-search）"
+    else
+        echo "  搜索页签 : 未生成（当前打包器不支持全文搜索）"
+    fi
     if [ "$PRUNE" = "none" ]; then
         echo "  效果预览 : $out/preview.html"
-        echo "  官方工程 : $out/docs.hhp（Windows 上 hhc.exe docs.hhp 可重编标准 CHM）"
+        echo "  官方工程 : $out/docs.hhp（含 HTML 正文，Windows 上 hhc.exe docs.hhp 可重编）"
     elif [ "$PRUNE" = "hhp" ]; then
-        echo "  官方工程 : $out/docs.hhp（Windows 上 hhc.exe docs.hhp 可重编标准 CHM）"
+        echo "  官方工程 : $out/docs.hhp、toc.hhc（正文 HTML 已清理，重编请改用 --keep-html）"
     else
         echo "  仅保留   : CHM（HTML/工程文件已清理）"
     fi

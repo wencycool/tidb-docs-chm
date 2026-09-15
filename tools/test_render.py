@@ -186,14 +186,80 @@ def cases() -> bool:
                 ("链接使用哈希文件名", expected in linked),
                 ("文件名只含 ASCII", B.html_name_for_doc("nested/目标.md").isascii()))
 
-    # 14. 直接打开兼容工程只保留传统目录，不能生成自定义窗口、索引或全文库。
-    hhp = B.build_hhp("TiDB v7.5", "tidb.chm", ["index.html", "toc.hhc"])
+    # 14. 直接打开兼容工程只保留传统目录，不生成关键词索引；
+    #     Windows"搜索"页签需要全文搜索库 + 窗口定义里的搜索页签位，两者都要有。
+    hhp = B.build_hhp("TiDB v7.5", "tidb.chm", ["index.html", "toc.hhc"],
+                      full_text_search=True)
+    hhp_plain = B.build_hhp("TiDB v7.5", "tidb.chm", ["index.html", "toc.hhc"],
+                            full_text_search=False)
+    window_line = [ln for ln in hhp.splitlines() if ln.startswith("main=")]
     ok &= check("直接打开 HHP 结构", "正文",
                 ("声明传统目录", "Contents file=toc.hhc" in hhp),
                 ("默认页正确", "Default topic=index.html" in hhp),
-                ("无自定义窗口", "[WINDOWS]" not in hhp),
+                ("声明默认窗口", "Default window=main" in hhp),
                 ("无关键词索引", "Index file=" not in hhp and "Binary Index=No" in hhp),
-                ("无全文数据库", "Full-text search=No" in hhp))
+                ("开启全文数据库", "Full-text search=Yes" in hhp),
+                ("窗口定义开启搜索页签",
+                 len(window_line) == 1 and ",0x63520," in window_line[0]),
+                ("窗口定义字段数为 20",
+                 len(window_line) == 1
+                 and len(window_line[0].split("=", 1)[1].split(",")) == 20),
+                ("关闭全文搜索时无搜索页签",
+                 "Full-text search=No" in hhp_plain and ",0x63120," in hhp_plain))
+
+    # 14.1. --search 的三态语义：auto 跟着 chmcmd 走，fulltext 不允许静默降级。
+    f = B.resolve_build_features("chmcmd", "auto", "binary", True)
+    ok &= check("--search auto + chmcmd", "正文",
+                ("开启全文搜索", f.full_text_search is True),
+                ("保留二进制目录", f.binary_toc is True))
+    f = B.resolve_build_features("builtin", "auto", "binary", False)
+    ok &= check("--search auto + builtin", "正文",
+                ("不启用全文搜索", f.full_text_search is False))
+    f = B.resolve_build_features("chmcmd", "none", "binary", True)
+    ok &= check("--search none", "正文",
+                ("不启用全文搜索", f.full_text_search is False))
+    f = B.resolve_build_features("chmcmd", "auto", "hhc", True)
+    ok &= check("--toc-mode hhc", "正文",
+                ("不写二进制目录", f.binary_toc is False))
+    for compiler, mode, available, label in [
+        ("builtin", "fulltext", False, "builtin + fulltext"),
+        ("chmcmd", "fulltext", False, "chmcmd 缺失 + fulltext"),
+    ]:
+        try:
+            B.resolve_build_features(compiler, mode, "binary", available)
+        except RuntimeError:
+            ok &= check(f"--search 强制失败：{label}", "正文",
+                        ("按预期抛错", True))
+        else:
+            ok &= check(f"--search 强制失败：{label}", "正文",
+                        ("按预期抛错", False))
+
+    # 14.2. 关键词索引与全文搜索必须分开判定。
+    names = ["/index.html", "/$FIftiMain", "/#WINDOWS", "/#SYSTEM"]
+    ok &= check("全文搜索条目判定", "正文",
+                ("只认全文搜索库",
+                 B.detect_full_text_search_entries(names) == ["/$FIftiMain"]),
+                ("不把窗口定义当索引",
+                 B.detect_keyword_index_entries(names) == []
+                 and B.detect_search_related_entries(names) == ["/$FIftiMain"]),
+                ("识别关键词索引",
+                 B.detect_keyword_index_entries(["/index.hhk"]) == ["/index.hhk"]))
+
+    # 14.3. 窗口定义的"搜索"页签位：取自 MS hhc.exe 产物（GaussDB 产品文档
+    #       的 /#WINDOWS 用 0x62520，HTML Help Workshop 默认值 0x63520）。
+    def window_blob(props: int) -> bytes:
+        entry = bytearray(196)
+        struct.pack_into("<II", entry, 0, 196, 0)
+        struct.pack_into("<I", entry, 0x10, props)
+        return struct.pack("<II", 1, 196) + bytes(entry)
+
+    ok &= check("窗口定义搜索页签判定", "正文",
+                ("0x63520 含搜索页签",
+                 B.windows_search_tab_enabled(window_blob(0x63520)) is True),
+                ("0x63120 不含搜索页签",
+                 B.windows_search_tab_enabled(window_blob(0x63120)) is False),
+                ("无窗口定义时返回 None",
+                 B.windows_search_tab_enabled(b"") is None))
 
     # 15. 图片版资源也使用短 ASCII 文件名，避免 CHM 内部路径兼容问题。
     stats = dict(EMPTY_STATS)

@@ -39,6 +39,108 @@ TOC_HAS_LOCAL = 8
 
 
 # --------------------------------------------------------------------------
+# CHM 内部条目判定：关键词索引（Index）与全文搜索（Search）
+#
+# 这两件事容易混为一谈，但在 Windows hh.exe 里对应不同侧栏页签：
+#
+#   *.hhk + /#IVB /#INDEX   关键词索引 -> "索引"页签（本项目始终不生成）
+#   /$FIftiMain             全文搜索库 -> "搜索"页签（chmcmd 可生成）
+#
+# 第三方阅读器会把关键词索引条目平铺进目录树，所以 .hhk 一律禁止；
+# 全文搜索库是"搜索"页签的数据源，按 --search 取值决定要不要。
+# 具体流名随 FPC/chmcmd 版本可能变化，因此集中在这里判定：
+# build_chm.py（构建校验）和 verify_chm.py（成品自检）共用同一份规则。
+# --------------------------------------------------------------------------
+
+# 全文搜索索引本体：FPC 写 /$FIftiMain，MS hhc.exe 另写 /#FIfti* 系列
+FULLTEXT_SEARCH_MARKERS = ("/$fifti", "/#fifti")
+
+# 关键词索引（.hhk）的伴随流。全文搜索开启时 FPC/MS 也可能写 /#IDXHDR，
+# 因此它们只在"未要求全文搜索却出现"时才算异常。
+AUXILIARY_INDEX_MARKERS = ("/#idxhdr", "/#ivb", "/#index")
+
+
+def detect_full_text_search_entries(names: Iterable[str]) -> list[str]:
+    """挑出支撑 Windows "搜索"页签的全文搜索内部条目。
+
+    names 为 CHM 内部条目名（如 ``/$FIftiMain``）；返回排序后的原样名字，
+    找不到就返回空列表。
+    """
+    return sorted(n for n in names if n.lower().startswith(FULLTEXT_SEARCH_MARKERS))
+
+
+def detect_keyword_index_entries(names: Iterable[str]) -> list[str]:
+    """挑出关键词索引（``.hhk``）条目。本项目始终不生成，出现即视为污染。"""
+    return sorted(n for n in names if n.lower().endswith(".hhk"))
+
+
+def detect_auxiliary_index_entries(names: Iterable[str]) -> list[str]:
+    """挑出关键词索引/全文搜索共用的辅助流（``#IDXHDR``、``#IVB``、``#INDEX``）。"""
+    return sorted(n for n in names if n.lower().startswith(AUXILIARY_INDEX_MARKERS))
+
+
+def detect_search_related_entries(names: Iterable[str]) -> list[str]:
+    """用于判定的"搜索相关条目"全集：全文搜索本体 + 辅助流。
+
+    未要求全文搜索时出现其中任何一个，都说明 CHM 里混进了不该有的索引数据。
+    """
+    return sorted(set(detect_full_text_search_entries(names))
+                  | set(detect_auxiliary_index_entries(names)))
+
+
+# /#SYSTEM 记录 4（编译信息）里的"开启全文搜索"标志。
+# 实测：chmcmd 在 Full-text search=Yes 时把该 u32 置 1、No 时置 0，
+# 与 hh.exe 是否显示"搜索"页签一致；只看 /$FIftiMain 存在与否不够。
+SYSTEM_RECORD_COMPILE_INFO = 4
+
+
+def parse_system_records(data: bytes) -> dict[int, list[bytes]]:
+    """解析 /#SYSTEM：4 字节版本号 + 一串 u16 code / u16 size / data 记录。"""
+    records: dict[int, list[bytes]] = {}
+    offset = 4
+    while offset + 4 <= len(data):
+        code, size = struct.unpack_from("<HH", data, offset)
+        start = offset + 4
+        end = start + size
+        if end > len(data):
+            break
+        records.setdefault(code, []).append(data[start:end])
+        offset = end
+    return records
+
+
+def system_fulltext_search_flag(data: bytes) -> bool | None:
+    """读 /#SYSTEM 记录 4 的全文搜索标志，返回 True/False/None（无法判定）。"""
+    values = parse_system_records(data).get(SYSTEM_RECORD_COMPILE_INFO, [])
+    if not values or len(values[0]) < 12:
+        return None
+    return struct.unpack_from("<I", values[0], 8)[0] != 0
+
+
+# /#WINDOWS（窗口定义）：4 字节窗口数 + 4 字节条目大小 + 条目数组。
+# 条目 = HH_WINTYPE 的内嵌形态，字段用 #STRINGS 偏移代替指针；
+# 偏移 0x10 是 fsWinProperties（导航窗格样式位）。
+WINDOWS_ENTRY_FSWINPROPERTIES = 0x10
+# HHWIN_PROP_TAB_SEARCH（Microsoft HTML Help SDK htmlhelp.h）
+WINDOWS_FLAG_TAB_SEARCH = 0x00000400
+
+
+def windows_search_tab_enabled(data: bytes) -> bool | None:
+    """判断 /#WINDOWS 里第一个窗口定义是否开启"搜索"页签。
+
+    返回 None 表示 CHM 没有窗口定义，hh.exe 会使用只有目录的内置默认窗口，
+    即使 CHM 内有 /$FIftiMain 也不会出现"搜索"页签。
+    """
+    if len(data) < 8:
+        return None
+    count, size = struct.unpack_from("<II", data, 0)
+    if count < 1 or size < WINDOWS_ENTRY_FSWINPROPERTIES + 4 or len(data) < 8 + size:
+        return None
+    props = struct.unpack_from("<I", data, 8 + WINDOWS_ENTRY_FSWINPROPERTIES)[0]
+    return bool(props & WINDOWS_FLAG_TAB_SEARCH)
+
+
+# --------------------------------------------------------------------------
 # 基础编码工具
 # --------------------------------------------------------------------------
 

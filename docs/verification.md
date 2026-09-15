@@ -233,3 +233,68 @@ chmls extractall dist/tidb-docs-cn/tidb-docs-cn.chm /tmp/c
 - **内置打包器的 `::DataSpace`** 只有 `NameList` + `Storage/Uncompressed/Content`，
   而 `hhc.exe`/`chmcmd` 产物是 `MSCompressed/Content` 加 `ControlData`、`SpanInfo`、
   `Transform` 一整套。ITSF 允许未压缩形态，但同样建议随上面那条实机验收一并确认。
+
+## 9. 2026-09-15：Windows"搜索"页签（全文搜索）
+
+### 9.1 现象与根因
+
+现象：CHM 在 Windows `hh.exe` 里只有"目录"，左侧没有"搜索"页签。
+
+根因有两条，缺一不可：
+
+1. `.hhp` 里写死了 `Full-text search=No` —— 主动关掉了全文搜索库
+   （`$FIftiMain`），而这个库正是"搜索"页签的数据源；
+2. 工程文件没有 `[WINDOWS]` 段 —— `hh.exe` 的左侧导航窗格**有哪些页签由窗口定义
+   决定**，"搜索"页签对应 `fsWinProperties` 的 `HHWIN_PROP_TAB_SEARCH(0x400)`。
+   没有窗口定义时查看器退回只有目录的内置默认窗口，**即使全文搜索库已经生成也
+   不会出现"搜索"页签**。
+
+`Binary Index`/`.hhk`（关键词索引）与"搜索"无关：它对应"索引"页签，而且第三方
+阅读器会把索引条目平铺进目录树，因此继续保持关闭。
+
+### 9.2 本轮修改
+
+- `build_hhp()` 增加 `full_text_search` 参数（`Full-text search=Yes/No`），并固定
+  写一段 `[WINDOWS]`：`0x63520`（含搜索页签位）/ `0x63120`（`--no-search` 时），
+  工具栏 `0x384E`；`[OPTIONS]` 增加 `Default window=main`。
+- 新增 `--search auto|fulltext|none`（默认 `auto`）：`auto` 在 `chmcmd` 可用时开启；
+  `fulltext` 是强约束，`builtin` 或缺 `chmcmd` 时构建直接失败，禁止静默降级；
+  `none` 保持无搜索。打包器解析提前到生成 `hhp` 之前，两份工程文件配置一致。
+- 构建校验区分"关键词索引"与"全文搜索"：`.hhk`/`#IVB`/`#INDEX` 一律失败；
+  全文搜索按三要件核对（`$FIftiMain`、`/#SYSTEM` 记录 4 标志、`/#WINDOWS` 搜索页签位）。
+- `verify_chm.py` 增加 `--expect-search auto|yes|no`，并把三要件作为独立检查项输出。
+- `build.sh` 增加 `--search=`/`--no-search` 透传，自检时按构建意图传 `--expect-search`。
+- 判定逻辑集中到 `chmwriter.py`：`detect_full_text_search_entries()`、
+  `detect_keyword_index_entries()`、`detect_auxiliary_index_entries()`、
+  `system_fulltext_search_flag()`、`windows_search_tab_enabled()`。
+- 新增 `tools/test_chm_search.py`：用真实 `chmcmd` 编译含 `TiKV`/`raftstore`/
+  `TiFlash`/`learner` 的小样张，核对三要件与"关闭时无搜索结构"。
+- 新增 `docs/windows-search.md`：成因、开关、中文限制、实机验收清单、排查顺序。
+
+### 9.3 本机实测证据
+
+- `chmcmd` + `Full-text search=Yes` 会写出 `/$FIftiMain`（以及 `/#TOPICS`、
+  `/#STRINGS`、`/#URLTBL`、`/#URLSTR`），并把 `/#SYSTEM` 记录 4 的全文搜索标志
+  置 1；`No` 时三者都没有。
+- 带 `[WINDOWS]` 的工程编译出的 `/#WINDOWS` 是 204 字节、`fsValidMembers=0x536`，
+  与微软 `hhc.exe` 产物（GaussDB 产品文档）逐字段一致；导航窗格样式
+  `0x63520` 含 `0x400`，微软产物用的是 `0x62520`（同样含 `0x400`，少一个收藏页签）。
+- `HHWIN_PROP_TAB_SEARCH = 0x400` 取自 Microsoft HTML Help SDK `htmlhelp.h`；
+  Wine 的 `hhctrl.ocx`（`dlls/hhctrl.ocx/help.c`）也只在
+  `fsWinProperties & HHWIN_PROP_TAB_SEARCH` 时才创建搜索页签，无窗口定义时默认值
+  不含该位。
+- **中文搜索：FPC 索引器不支持**。`htmlindexer.pas` 的词字符集合只有
+  ASCII `a-z 0-9 _`（另有 `#$DE/#$FE`），中日韩字节一律当分隔符；实测索引里只有
+  ASCII 词，且索引头代码页/语言 ID 固定为 cp1252/1033、`#SYSTEM` 的 DBCS 标志为 0。
+  因此 chmcmd 产物可以搜 `TiDB`/`raftstore` 这类 ASCII 词，中文关键词搜不到；
+  需要中文搜索时在 Windows 上用 `hhc.exe docs.hhp` 重编（`--keep-html` 同时保留 HTML
+  与工程文件，`--keep-hhp` 只有工程文件、不足以重编）。
+
+### 9.4 仍需 Windows 实机闭环
+
+- "搜索"页签是否真的出现、能否返回结果、点击结果是否打开正文（清单见
+  [`windows-search.md`](windows-search.md) 第 4 节）。
+- `hh.exe` 是否接受 Free Pascal 生成的 `/$FIftiMain`：微软侧无公开文档，Free Pascal
+  侧也没有实机记录，本轮只能证明结构齐备且与 chmcmd 自身读取一致。
+- 若实机仍无"搜索"页签，按 `docs/windows-search.md` 第 5 节逐级兜底，首选"在
+  Windows 上用 `hhc.exe` 重编 `docs.hhp`"。

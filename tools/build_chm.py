@@ -7,10 +7,15 @@ build_chm.py —— 把 pingcap/docs-cn 的 Markdown 文档打包成 CHM。
   2. 无视频：删除 <iframe> / <video> / YouTube、Bilibili 等嵌入及其引导句
   3. 优雅：统一 CSS（按 hh.exe 的 IE 渲染引擎能力编写，不使用 flex/grid/var）
   4. 可复现：输出最小 .hhp/.hhc + HTML，可在 Windows 上重新编译
-  5. 兼容：短 ASCII 内容名、单一传统目录、无自定义窗口/索引/全文库
+  5. 兼容：短 ASCII 内容名、单一传统目录、无自定义窗口
+  6. Windows 原生 "搜索"页签：--search 控制 CHM Full Text Search（chmcmd 生成）
 
 用法：
     python3 build_chm.py --repo ../src/docs --out ../out --sections "Get Started,Deploy"
+
+带 Windows"搜索"页签的正式构建：
+    python3 build_chm.py --repo ../src/docs --out ../out --all \
+        --compiler chmcmd --search fulltext
 """
 
 from __future__ import annotations
@@ -31,7 +36,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import markdown  # noqa: E402
 
-from chmwriter import ChmWriter, TocNode  # noqa: E402
+from chmwriter import (  # noqa: E402
+    ChmWriter,
+    TocNode,
+    detect_full_text_search_entries,
+    detect_keyword_index_entries,
+    detect_search_related_entries,
+    system_fulltext_search_flag,
+    windows_search_tab_enabled,
+)
 
 MD_EXTENSIONS = ["extra", "sane_lists", "toc", "attr_list", "md_in_html"]
 
@@ -44,6 +57,27 @@ UTF8_BOM = b"\xef\xbb\xbf"
 
 # Windows 二进制目录需要的五个系统流（--toc-mode binary 时校验其齐全）
 BINARY_TOC_STREAMS = {"/#TOCIDX", "/#TOPICS", "/#STRINGS", "/#URLTBL", "/#URLSTR"}
+
+# --------------------------------------------------------------------------
+# Windows 查看器窗口定义（.hhp 的 [WINDOWS] 段）
+#
+# hh.exe 左侧导航窗格有哪些页签不是由 CHM 里"有什么"决定的，而是由窗口定义
+# （CHM 内的 /#WINDOWS 流，来自 .hhp 的 [WINDOWS]）里的 fsWinProperties 位决定：
+# 只有 HHWIN_PROP_TAB_SEARCH(0x400) 置位才会出现"搜索"页签——即使 CHM 里
+# 已经有 /$FIftiMain 全文搜索库。没有窗口定义时，查看器退回到内置默认窗口
+# （HHWIN_PROP_TRI_PANE，仅目录），这就是"有索引却没搜索页签"的成因。
+# 位值取自 Microsoft HTML Help SDK 的 htmlhelp.h（Wine 的 hhctrl.ocx
+# 重实现里同样按 HHWIN_PROP_TAB_SEARCH 创建搜索页签）。
+# --------------------------------------------------------------------------
+
+DEFAULT_WINDOW_NAME = "main"
+
+# 三窗格 + 自动同步 + 收藏 + 可改标题 + 增强搜索（不含"搜索"页签）
+WINDOW_NAV_STYLE_PLAIN = 0x63120
+# HTML Help Workshop 的默认值：在上面基础上加"搜索"页签（0x400）
+WINDOW_NAV_STYLE_SEARCH = 0x63520
+# 工具栏按钮：折叠展开、后退、前进、主页、同步、选项、打印
+WINDOW_TOOLBAR_BUTTONS = 0x384E
 
 # --------------------------------------------------------------------------
 # 目录树
@@ -1066,27 +1100,54 @@ def collect_entries(entries: list[TocEntry]) -> list[TocEntry]:
 
 
 def build_hhp(title: str, chm_name: str, files: list[str], lang: str = "en",
-              binary_toc: bool = True) -> str:
-    """生成可直接打开的最小 HTML Help 工程，不创建窗口、索引或全文库。
+              binary_toc: bool = True, full_text_search: bool = False,
+              window_name: str = DEFAULT_WINDOW_NAME) -> str:
+    """生成可直接打开的最小 HTML Help 工程，不创建关键词索引。
 
     binary_toc=True 时让 hhc.exe/chmcmd 一并写入 Windows 原生二进制目录，
     与两个编译器自己的默认产物一致（`--toc-mode hhc` 可关闭）。
+
+    full_text_search=True 时写 `Full-text search=Yes`，由支持 FTS 的编译器
+    （chmcmd）生成 Windows "搜索"页签需要的全文索引库。
+    注意这**不是**关键词索引：`Binary Index=No` 与 `.hhk` 都保持关闭，
+    否则第三方阅读器会把索引条目平铺进目录树。
+
+    同时总是写一个 `[WINDOWS]` 窗口定义：左侧导航窗格有哪些页签由它决定，
+    其中"搜索"页签对应 fsWinProperties 的 HHWIN_PROP_TAB_SEARCH(0x400) 位。
+    没有窗口定义时 hh.exe 用内置默认窗口（只有目录），**即使 CHM 里有全文
+    搜索库也不会出现"搜索"页签**，所以这个定义不能省。
     """
     # hhp 是 hhc.exe 按 ANSI 读的，Language 行保持纯 ASCII，避免编码问题
     lang_line = "0x0804 Simplified Chinese" if lang == "zh" else "0x0409 English (United States)"
+    nav_style = (WINDOW_NAV_STYLE_SEARCH if full_text_search
+                 else WINDOW_NAV_STYLE_PLAIN)
+    # [WINDOWS] 每行的字段顺序（与 HTML Help Workshop 一致，chmcmd 同样解析）：
+    # 标题, 目录, 索引, 默认页, 主页, 跳转按钮 1/2 的文件与文字,
+    # 导航窗格样式, 窗格宽度, 工具栏按钮, 窗口矩形, 样式, 扩展样式,
+    # 显示状态, 窗格初始关闭, 默认页签, 页签位置, 通知 ID
+    window_fields = [
+        f'"{title}"', '"toc.hhc"', '""', '"index.html"', '"index.html"',
+        "", "", "", "",
+        f"0x{nav_style:X}", "", f"0x{WINDOW_TOOLBAR_BUTTONS:X}",
+        "", "", "", "", "", "", "", "0",
+    ]
     lines = [
         "[OPTIONS]",
         "Compatibility=1.1 or later",
         f"Compiled file={chm_name}",
         "Contents file=toc.hhc",
         "Default topic=index.html",
+        f"Default window={window_name}",
         f"Title={title}",
         f"Language={lang_line}",
         f"Binary TOC={'Yes' if binary_toc else 'No'}",
         "Binary Index=No",
-        "Full-text search=No",
+        f"Full-text search={'Yes' if full_text_search else 'No'}",
         "Create CHI file=No",
         "Display compile progress=No",
+        "",
+        "[WINDOWS]",
+        f"{window_name}=" + ",".join(window_fields),
         "",
         "[FILES]",
     ]
@@ -1100,6 +1161,53 @@ def choose_compiler(requested: str, chmcmd_available: bool) -> str:
     if requested == "auto":
         return "chmcmd" if chmcmd_available else "builtin"
     return requested
+
+
+@dataclass(frozen=True)
+class BuildFeatures:
+    """一次构建实际启用的 Windows 原生能力。
+
+    目前只有二进制目录和全文搜索；以后加关键词索引、CHI、合并 CHM 时
+    继续往这里加字段，主流程不需要再判断 `args.xxx` / `compiler`。
+    """
+
+    binary_toc: bool
+    full_text_search: bool
+
+
+def resolve_build_features(compiler: str, search_mode: str, toc_mode: str,
+                           has_chmcmd: bool) -> BuildFeatures:
+    """把 CLI 取值解析成实际启用的能力，`--search fulltext` 不允许静默降级。
+
+    auto：chmcmd 可用就开启全文搜索，builtin 则关闭（由调用方打印提示）。
+    fulltext：必须由 chmcmd 生成，否则抛 RuntimeError，调用方转成构建失败。
+    none：保持无搜索。
+    """
+    binary_toc = toc_mode == "binary"
+
+    if search_mode == "none":
+        full_text_search = False
+
+    elif search_mode == "fulltext":
+        if compiler == "builtin":
+            raise RuntimeError(
+                "builtin writer 尚未实现 CHM Full Text Search，"
+                "--search fulltext 需要 chmcmd"
+            )
+        if not has_chmcmd:
+            raise RuntimeError(
+                "--search fulltext 需要 Free Pascal 的 chmcmd"
+                "（macOS: brew install fpc），不能退化为无搜索构建"
+            )
+        full_text_search = True
+
+    elif search_mode == "auto":
+        full_text_search = compiler == "chmcmd" and has_chmcmd
+
+    else:  # pragma: no cover - argparse choices 已经挡住
+        raise ValueError(f"未知的 --search 取值：{search_mode}")
+
+    return BuildFeatures(binary_toc=binary_toc, full_text_search=full_text_search)
 
 
 def to_chm_toc(entries: list[TocEntry]) -> list[TocNode]:
@@ -1124,11 +1232,15 @@ def main() -> int:
                     help="包含文档引用的图片资源（默认不包含，体积最小）")
     ap.add_argument("--prune", default="none", choices=["none", "hhp", "chm"],
                     help="打包完成后清理中间产物：none=保留 HTML 版与工程文件（默认）；"
-                         "hhp=只留 *.chm + docs.hhp/toc.hhc（Windows 重编用）；"
+                         "hhp=只留 *.chm + docs.hhp/toc.hhc（工程存档，正文已清理）；"
                          "chm=只留 *.chm")
     ap.add_argument("--compiler", default="auto", choices=["auto", "builtin", "chmcmd"],
                     help="打包器：auto=有 chmcmd 时用 LZX 压缩，否则自动用内置打包器；"
                          "builtin=内置未压缩；chmcmd=强制使用，缺少时报错")
+    ap.add_argument("--search", default="auto", choices=["auto", "fulltext", "none"],
+                    help="Windows'搜索'页签用的全文搜索：auto=chmcmd 可用时开启，"
+                         "builtin 自动关闭并提示；fulltext=强制要求生成，必须用 chmcmd，"
+                         "否则构建失败；none=关闭")
     ap.add_argument("--image-profile", default="compact",
                     choices=sorted(IMAGE_PROFILES),
                     help="图片压缩档位：compact=宽≤1200 + PNG 256 色（默认）；"
@@ -1161,7 +1273,27 @@ def main() -> int:
     repo = os.path.abspath(args.repo)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
-    want_binary_toc = args.toc_mode == "binary"
+    # 打包器与能力必须在生成 hhp 之前定下来：docs.hhp 和 docs.chmcmd.hhp 的
+    # Full-text search 取值都取决于最终用的是哪个打包器，早解析可避免
+    # 两份工程文件配置不一致。
+    has_chmcmd = shutil.which("chmcmd") is not None
+    compiler = choose_compiler(args.compiler, has_chmcmd)
+    try:
+        features = resolve_build_features(
+            compiler=compiler,
+            search_mode=args.search,
+            toc_mode=args.toc_mode,
+            has_chmcmd=has_chmcmd,
+        )
+    except (RuntimeError, ValueError) as exc:
+        print(f"[失败] {exc}", file=sys.stderr)
+        return 1
+    want_binary_toc = features.binary_toc
+    want_full_text_search = features.full_text_search
+    if args.search == "auto" and not want_full_text_search:
+        print("      提示：当前使用内置打包器，成品没有 Windows'搜索'页签；"
+              "需要搜索请安装 chmcmd（macOS: brew install fpc），"
+              "或改用 --compiler chmcmd --search fulltext")
     build_epoch = resolve_build_epoch(repo)
     build_date = resolve_build_date(repo)
     # 清理旧版本构建器留下的启动脚本——只删内容确实是本项目旧产物时才动手，
@@ -1318,7 +1450,8 @@ def main() -> int:
 
     print("[4/6] 生成直接打开兼容的 hhp / hhc")
     # hhc 由 hh.exe 与 hhc.exe 按 ANSI 代码页解析，中文环境必须 GBK。
-    # 只生成单一传统目录，不生成关键词索引或全文搜索数据库。
+    # 只生成传统目录 + 可选的 Windows 二进制目录与全文搜索，
+    # 不生成关键词索引（.hhk），避免条目被平铺进目录树。
     pages["toc.hhc"] = build_hhc(entries).encode("gbk")
     file_list = sorted(pages)
     skip_in_chm = {"preview.html"}
@@ -1328,7 +1461,8 @@ def main() -> int:
         fh.write(
             build_hhp(args.title, args.chm,
                       [f for f in file_list if f not in skip_in_chm], args.lang,
-                      binary_toc=want_binary_toc)
+                      binary_toc=want_binary_toc,
+                      full_text_search=want_full_text_search)
             .encode("gbk")
         )
     for name, data in pages.items():
@@ -1336,11 +1470,12 @@ def main() -> int:
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "wb") as fh:
             fh.write(data)
+    print(f"      Windows 二进制目录：{'启用' if want_binary_toc else '关闭'}")
+    print("      Windows 全文搜索："
+          + ("启用（由 chmcmd 生成）" if want_full_text_search else "关闭"))
     print("[5/6] 打包 CHM")
     chm_path = os.path.join(out, args.chm)
     chm_files = [f for f in file_list if f not in skip_in_chm]
-    has_chmcmd = shutil.which("chmcmd") is not None
-    compiler = choose_compiler(args.compiler, has_chmcmd)
     if args.compiler == "auto" and compiler == "builtin":
         print("      未找到 chmcmd：auto 自动改用内置未压缩打包器")
     if compiler == "chmcmd" and not has_chmcmd:
@@ -1350,11 +1485,13 @@ def main() -> int:
 
     chmcmd_hhp = ""
     if compiler == "chmcmd":
-        # chmcmd 自带 LZX 压缩实现；按 --toc-mode 决定是否附带二进制目录
+        # chmcmd 自带 LZX 压缩实现；按 --toc-mode 决定是否附带二进制目录，
+        # 按 --search 决定是否生成 Windows 全文搜索索引
         chmcmd_hhp = "docs.chmcmd.hhp"
         with open(os.path.join(out, chmcmd_hhp), "wb") as fh:
             fh.write(build_hhp(args.title, args.chm, chm_files, args.lang,
-                               binary_toc=want_binary_toc).encode("gbk"))
+                               binary_toc=want_binary_toc,
+                               full_text_search=want_full_text_search).encode("gbk"))
         res = subprocess.run(["chmcmd", "--no-html-scan", chmcmd_hhp],
                              cwd=out, capture_output=True)
         if res.returncode != 0 or not os.path.exists(chm_path):
@@ -1428,18 +1565,48 @@ def main() -> int:
                 print("      [失败] 压缩包内容与源文件不一致", file=sys.stderr)
                 return 1
 
-    # 索引文件会污染第三方阅读器侧栏；toc.hhc 供第三方阅读器恢复层级，
-    # 默认还会附加 Windows 原生二进制目录供 hh.exe 使用。
-    leaked_index = sorted(
-        n for n in reader.files
-        if n.lower().endswith(".hhk") or n.startswith("/#IDXHDR")
-        or n.startswith("/#IVB") or n.startswith("/#INDEX")
-    )
-    binary_entries = sorted(n for n in reader.files if n in BINARY_TOC_STREAMS)
+    # 关键词索引（.hhk）会污染第三方阅读器侧栏，一律禁止；
+    # 全文搜索库（/$FIftiMain）是 Windows"搜索"页签的数据源，按 --search 判定。
+    keyword_index_entries = detect_keyword_index_entries(reader.files)
+    fulltext_entries = detect_full_text_search_entries(reader.files)
+    search_entries = detect_search_related_entries(reader.files)
+    try:
+        system_blob = read_chm_stream(reader, chm_path, "/#SYSTEM")
+    except KeyError:
+        system_blob = b""
+    system_fts_flag = system_fulltext_search_flag(system_blob)
+    windows_blob = read_chm_stream(reader, chm_path, "/#WINDOWS")
+    search_tab = windows_search_tab_enabled(windows_blob)
     hygiene_ok = True
-    if leaked_index:
+    if keyword_index_entries:
         hygiene_ok = False
-        print(f"      [失败] CHM 内混入索引文件：{leaked_index}")
+        print(f"      [失败] CHM 内混入关键词索引文件：{keyword_index_entries}")
+    if want_full_text_search:
+        if not fulltext_entries:
+            hygiene_ok = False
+            print("      [失败] 要求全文搜索，但 CHM 内没有发现全文搜索内部结构")
+        elif system_fts_flag is not True:
+            hygiene_ok = False
+            print("      [失败] /#SYSTEM 未声明全文搜索标志，"
+                  "Windows hh.exe 不会显示'搜索'页签")
+        elif search_tab is not True:
+            hygiene_ok = False
+            print("      [失败] 窗口定义未开启'搜索'页签（HHWIN_PROP_TAB_SEARCH），"
+                  "hh.exe 左侧不会出现'搜索'页签")
+        else:
+            print("      Windows 全文搜索索引校验 OK："
+                  f"{len(fulltext_entries)} 个内部条目"
+                  f"（{', '.join(fulltext_entries)}），"
+                  "窗口定义已开启'搜索'页签")
+            print("      提示：chmcmd 的全文索引只收 ASCII 词"
+                  "（FPC 索引器不认中日韩字），中文关键词搜不到；"
+                  "要中文搜索请在 Windows 上用 hhc.exe 重编 docs.hhp")
+    elif search_entries or system_fts_flag:
+        hygiene_ok = False
+        print("      [失败] 未启用全文搜索却发现搜索索引："
+              f"{search_entries or '/#SYSTEM 全文搜索标志'}")
+    else:
+        print("      Windows 全文搜索校验 OK：未启用全文搜索，也未发现搜索索引")
     if missing_binary:
         hygiene_ok = False
         print(f"      [失败] Windows 二进制目录不完整：缺少 {missing_binary}")
@@ -1448,7 +1615,7 @@ def main() -> int:
     else:
         print("      目录组成：仅传统 toc.hhc（--toc-mode hhc），无二进制目录与索引")
     if hygiene_ok:
-        print("      目录卫生检查 OK：无 *.hhk 索引与额外汇总条目")
+        print("      目录卫生检查 OK：无关键词索引条目、无额外汇总条目")
 
     if args.prune != "none" and hygiene_ok:
         keep = {args.chm}
@@ -1495,6 +1662,35 @@ def chm_content_readable(reader) -> bool:
     except KeyError:
         return False
     return head.startswith((b"\xef\xbb\xbf", b"<", b"\n", b"\r", b" "))
+
+
+def read_chm_stream(reader, chm_path: str, name: str) -> bytes:
+    """读取 CHM 内部条目，读不到返回空字节串。
+
+    LZX 压缩产物的系统流（``/#WINDOWS``、``/$FIftiMain`` 等）内容在
+    ``::DataSpace/Storage/MSCompressed`` 命名空间里，内置解析器按偏移取到的是
+    空数据，此时用 FPC 的 ``chmls`` 整包解包后回读。
+    """
+    try:
+        data = reader.read(name)
+    except KeyError:
+        data = b""
+    if data:
+        return data
+    if not shutil.which("chmls"):
+        return b""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        res = subprocess.run(["chmls", "extractall", chm_path, tmp],
+                             capture_output=True)
+        if res.returncode != 0:
+            return b""
+        path = os.path.join(tmp, name.lstrip("/"))
+        if not os.path.isfile(path):
+            return b""
+        with open(path, "rb") as fh:
+            return fh.read()
 
 
 def binary_toc_check(required: set[str], present: set[str],

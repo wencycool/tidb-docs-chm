@@ -28,9 +28,11 @@ tidb-docs-chm/
 │   ├── build_chm.py         TOC 解析、Markdown 清洗、链接转换、HTML 和 CHM 流水线
 │   ├── chmwriter.py         内置 CHM 写入器、二进制目录生成器和只读解析器
 │   ├── test_render.py       渲染规则测试与全量 Markdown 语料扫描
-│   └── verify_chm.py        CHM 结构、目录、编码、资源、链接和版式自检
+│   ├── test_chm_search.py   chmcmd 全文搜索（Windows"搜索"页签）集成测试
+│   └── verify_chm.py        CHM 结构、目录、编码、资源、链接、搜索和版式自检
 ├── docs/
 │   ├── verification.md      兼容性与版式问题的验收记录
+│   ├── windows-search.md    Windows"搜索"页签的说明与实机验收清单
 │   └── screenshots/         目录、编码、压缩和排版验收截图
 ├── repos/
 │   └── docs-cn/             官方文档仓库，由 build.sh 自动克隆或更新，不提交
@@ -125,7 +127,7 @@ cd tidb-docs-chm
 # 保留全部 HTML、预览页和工程文件
 ./build.sh release-7.5 --keep-html
 
-# 只额外保留 Windows 重编所需的 HHP/HHC
+# 只额外保留工程文件 HHP/HHC（要能在 Windows 重编，需用 --keep-html 保留 HTML）
 ./build.sh release-7.5 --keep-hhp
 ```
 
@@ -152,6 +154,9 @@ git ls-remote --heads https://github.com/pingcap/docs-cn.git "release-*"
 | `--only-chm` | `--prune-chm` | 开启 | 对应 `--prune=chm`，只保留 CHM |
 | `--toc-mode=binary` | 可用空格传值 | `binary` | 写 `toc.hhc` 与 Windows 二进制目录（`hh.exe` 有目录页签） |
 | `--toc-mode=hhc` | 可用空格传值 | 无 | 只写 `toc.hhc`，Windows 侧无目录页签 |
+| `--search=auto` | `--search auto` | `auto` | 有 `chmcmd` 时生成全文搜索库（`hh.exe` 有"搜索"页签），否则关闭并提示 |
+| `--search=fulltext` | `--search fulltext` | 无 | 强制生成全文搜索：必须用 `chmcmd`，否则构建失败，不会静默降级 |
+| `--no-search` | `--search=none` | 无 | 不生成全文搜索库（体积更小，`hh.exe` 无"搜索"页签） |
 | `--image-profile=compact` | 可用空格传值 | `compact` | 图片最大宽 1200、PNG 256 色、JPEG 质量 82 |
 | `--image-profile=tiny` | 可用空格传值 | 无 | 图片最大宽 1000、PNG 128 色、JPEG 质量 78 |
 | `--image-profile=original` | 可用空格传值 | 无 | 原图入库，不主动重编码 |
@@ -201,7 +206,7 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 | `--prune` 值 | 最终保留 | 适用场景 |
 | --- | --- | --- |
 | `chm` | 仅 `*.chm` | 日常构建和分发 |
-| `hhp` | `*.chm`、`docs.hhp`、`toc.hhc` | 在 Windows 使用 `hhc.exe` 重编 |
+| `hhp` | `*.chm`、`docs.hhp`、`toc.hhc` | 保留工程文件存档（正文 HTML 已清理，不能直接重编） |
 | `none` | CHM、HTML、CSS、预览页和工程文件 | 检查排版或调试链接 |
 
 主要文件说明：
@@ -210,7 +215,7 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 | --- | --- |
 | `*.chm` | 完全自包含的离线文档本体 |
 | `docs.hhp` | HTML Help 工程；使用 `--keep-hhp` 或 `--keep-html` 时保留 |
-| `toc.hhc` | 传统目录源，已打入 CHM；保留后也可供 `hhc.exe` 重编 |
+| `toc.hhc` | 传统目录源，已打入 CHM；配合未清理的 HTML 可供 `hhc.exe` 重编 |
 | `index.html`、`p*.html`、`style.css` | CHM 的页面和样式输入；`--keep-html` 时保留 |
 | `preview.html` | 模拟左侧目录和右侧正文的浏览器预览页，不写入 CHM |
 | `license.html` | 文档来源与许可页，写入 CHM |
@@ -265,6 +270,7 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 | `--images` | 关闭 | 打包文档引用的图片；别名为 `--keep-images` |
 | `--prune MODE` | `none` | `none` 保留全部；`hhp` 保留 CHM/HHP/HHC；`chm` 仅保留 CHM |
 | `--compiler MODE` | `auto` | `auto`、`builtin` 或 `chmcmd`，详见第 8 节 |
+| `--search MODE` | `auto` | `auto`、`fulltext` 或 `none`：Windows"搜索"页签用的全文搜索，详见第 8.3 节 |
 | `--image-profile PROFILE` | `compact` | `original`、`compact` 或 `tiny`，详见第 7 节 |
 | `--image-max-width N` | 档位值 | 覆盖图片最大宽度；`0` 表示不缩放 |
 | `--image-colors N` | 档位值 | 覆盖 PNG 色数；`0` 表示保持真彩 |
@@ -320,13 +326,59 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 - 内置写入器不依赖 Windows 或 FPC，生成合法的未压缩 ITSF CHM。
 - `chmcmd` 提供 LZX 压缩，主要压缩 HTML 文本；PNG/JPEG 本身已压缩，因此含图片版
   的二次压缩收益通常小于纯文字版。
-- `chmcmd` 使用单独的临时 HHP 配置，关闭索引、全文搜索和 CHI 文件。
+- `chmcmd` 使用单独的临时 HHP 配置，关闭关键词索引和 CHI 文件；全文搜索按
+  `--search` 决定（默认 `auto`，装了 `chmcmd` 就打开）。
 - 两种打包器都按 `--toc-mode` 生成目录：默认 `binary`，即传统 `toc.hhc` 加
   Windows 二进制目录；`hhc` 则只写传统目录。
 - 检测到 `chmls` 时，构建器会解包压缩 CHM，并把内容与打包输入逐字节比较。
 
 历史 v7.5 验收中，纯文字版由约 9.9 MB 压缩到约 2.5 MB，`compact` 含图片版由
 约 39.4 MB 压缩到约 30.7 MB。数据仅用于说明压缩量级。
+
+### 8.3 Windows"搜索"页签
+
+Windows `hh.exe` 左侧的"搜索"页签需要**三个**条件同时成立，缺一个都不会出现：
+
+1. CHM 内有全文搜索库 `/$FIftiMain`（`.hhp` 的 `Full-text search=Yes`，由
+   `chmcmd` 编译生成）；
+2. `/#SYSTEM` 记录 4 的"全文搜索开启"标志已置位（编译器自动写）；
+3. `/#WINDOWS` 窗口定义的导航窗格样式含 `HHWIN_PROP_TAB_SEARCH`（`0x400`）。
+
+第 3 条容易漏：导航窗格有哪些页签由窗口定义决定，**不声明窗口定义时 `hh.exe`
+会退回只有目录的内置默认窗口**——即使全文搜索库已经生成，也看不到"搜索"页签。
+因此 `build_hhp()` 总是写一段 `[WINDOWS]`：
+
+```ini
+[WINDOWS]
+main="TiDB 中文文档","toc.hhc","","index.html","index.html",,,,,0x63520,,0x384E,,,,,,,,0
+```
+
+`0x63520` 是 HTML Help Workshop 的默认导航窗格样式（三窗格 + 自动同步 +
+搜索 + 收藏 + 增强搜索），`--no-search` 时改用不含搜索位的 `0x63120`。
+关键词索引（`.hhk`、`Binary Index`）仍然保持关闭：它是"索引"页签而不是
+"搜索"页签，而且第三方阅读器会把索引条目平铺进目录树。
+
+正式发布建议显式要求搜索，这样缺 `chmcmd` 时会直接失败而不是悄悄退化：
+
+```bash
+./build.sh --compiler=chmcmd --search=fulltext
+# 或直接调用
+.venv/bin/python tools/build_chm.py \
+  --repo repos/docs-cn --out dist/tidb-docs-cn --all --lang zh \
+  --compiler chmcmd --search fulltext
+```
+
+**中文搜索的限制**：`chmcmd` 的全文索引器（Free Pascal）只认 ASCII 的
+`a-z 0-9 _`，中日韩文字一律当分隔符，因此它生成的索引只收录 `TiDB`、`TiKV`、
+`raftstore`、`tidb_mem_quota_query` 这类 ASCII 词，**中文关键词搜不到结果**。
+微软 `hhc.exe` 的索引器支持中日韩，所以需要中文搜索时请保留工程文件
+（`./build.sh --keep-html`，正文 HTML 也在时 `hhc.exe` 才能重编）并在 Windows 上重编：
+
+```bat
+hhc.exe docs.hhp
+```
+
+完整说明、成因分析和实机验收清单见 [`docs/windows-search.md`](docs/windows-search.md)。
 
 ## 9. 编码与目录约定
 
@@ -360,7 +412,8 @@ CHM 都没有），而同一个 CHM 在 `hh.exe` 里仍然正常打开——区�
 真正决定 `mk:@MSITStore` 能否打开的是 ITSF 段序（见第 11 节与
 [`docs/verification.md`](docs/verification.md)）。
 
-目录卫生依靠"不生成索引文件和全文搜索数据库"保证，而不是删除二进制目录流。
+目录卫生依靠"不生成关键词索引文件"保证，而不是删除二进制目录流；全文搜索库
+（`/$FIftiMain`）不参与目录树，按第 8.3 节单独判定。
 
 ## 10. Markdown、链接与资源处理
 
@@ -398,13 +451,21 @@ make test
 
 测试覆盖列表、嵌套代码块、引用块、HTML 容器、模板清理、图片语法、官网链接、标题锚点、
 有序列表类型、目录形态开关、二进制目录判定、构建日期可复现，以及 Windows CHM 二进制
-布局和启动目录。
+布局和启动目录。`make test` 还会跑一遍 `test_chm_search.py`：它用真实的 `chmcmd`
+编译含 `TiKV`、`raftstore`、`TiFlash`、`learner` 的小样张，核对全文搜索库、
+`/#SYSTEM` 标志、窗口定义搜索页签位确实都已生成，且没有关键词索引；
+没有安装 `chmcmd` 时该项自动跳过。
 
 ### 11.2 成品自检
 
 ```bash
+# 默认 auto：只要求"声明与产物自洽"
 .venv/bin/python tools/verify_chm.py \
   dist/tidb-docs-7.5/tidb-docs-7.5.chm
+
+# 明确要求 / 不允许 Windows"搜索"页签
+.venv/bin/python tools/verify_chm.py --expect-search yes dist/.../tidb-docs-7.5.chm
+.venv/bin/python tools/verify_chm.py --expect-search no  dist/.../tidb-docs-7.5.chm
 ```
 
 校验器会检查：
@@ -412,7 +473,7 @@ make test
 - ITSF Section 0、ITSP、PMGL/PMGI 目录块和 Windows 启动目录是否有效。
 - `/#SYSTEM` 是否把启动页和传统目录声明为 `index.html`、`toc.hhc`。
 - `toc.hhc` 和五个 Windows 二进制目录流是否齐全。
-- 是否混入 `index.hhk`、关键词索引或全文搜索数据库。
+- 是否混入 `index.hhk` 等关键词索引（全文搜索库不参与目录树，按 `--expect-search` 单独判定）。
 - 所有正文 HTML 是否带 UTF-8 BOM。
 - 所有主题页和本地资源是否使用短 ASCII 文件名。
 - 是否残留 Hugo 短代码、页首重复导航或必须联网显示的资源。
@@ -420,6 +481,8 @@ make test
 - 带 `#fragment` 的本地链接能否找到对应标题锚点。
 - 有序列表是否明确写入数字、字母或罗马数字类型。
 - LZX 解包内容是否与打包输入一致。
+- 全文搜索三要件是否一致：`/$FIftiMain`、`/#SYSTEM` 全文搜索标志、
+  `/#WINDOWS` 窗口定义的搜索页签位（`--expect-search yes|no|auto`）。
 
 ### 11.3 可选的独立工具检查
 
@@ -449,7 +512,10 @@ chmls extractall dist/tidb-docs-7.5/tidb-docs-7.5.chm /tmp/tidb-chm
 
 - LZX 压缩依赖 Free Pascal `chmcmd`；未安装时只能生成未压缩 CHM。
 - 外部网站内容不会被镜像，外链在无网络环境中无法访问。
-- 不生成关键词索引和全文搜索数据库，以保证目录干净和跨阅读器兼容性。
+- 不生成关键词索引（`.hhk`），以保证目录干净和跨阅读器兼容性。
+- 全文搜索库由 `chmcmd` 生成，它的索引器不支持中日韩文字：Windows"搜索"页签可用，
+  但中文关键词搜不到（只能搜 `TiDB`、`raftstore` 这类 ASCII 词）。需要中文搜索请在
+  Windows 上用 `hhc.exe` 重编 `docs.hhp`，详见 [`docs/windows-search.md`](docs/windows-search.md)。
 - macOS/Linux 无法原生运行 Windows `hh.exe`。仓库内可比对的是**结构证据**：内置写入器
   的 ITSF 段序、多块 PMGL/PMGI 根索引、quickref 布局都与三份真实 Windows CHM
   （微软 `hhc.exe` 生成的 `WiX.chm`、`DTFAPI.chm`，以及 TiDB 官方 7.5 中文 CHM）
