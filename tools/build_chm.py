@@ -60,17 +60,31 @@ UTF8_BOM = b"\xef\xbb\xbf"
 # 字号与 Windows 导航字体
 #
 # 正文和左侧导航必须分开处理：
-#   * 正文是 HTML，由 style.css 的 body 基准字号 + em 相对字号控制；
+#   * 正文是 HTML，由 style.css 的 body 基准字号 + em 相对字号控制，
+#     并按窗口宽度分档放大（见 ADAPTIVE_FONT_STEPS）；
 #   * 左侧 Contents/Search 导航是 Windows 原生控件，CSS 管不到它，
 #     由 CHM 的 Default Font（.hhp 的 `Default Font=` 与 /#SYSTEM 记录 16）
 #     给定"字体名,点数,字符集"，剩下的缩放交给 Windows DPI。
-# 不做"按窗口宽度动态缩放字体"：CHM 里跑的是 MSHTML，按 DPI 放大才是正解。
+# 左侧导航**不可能**随窗口缩放，能自适应的只有右侧正文。
 # --------------------------------------------------------------------------
 
 DEFAULT_BODY_FONT_SIZE = 15
 DEFAULT_NAV_FONT_SIZE = 10
-BODY_FONT_SIZE_RANGE = (12, 20)
+BODY_FONT_SIZE_RANGE = (12, 24)
 NAV_FONT_SIZE_RANGE = (8, 14)
+
+# 正文"窗口自适应"分档：(视口最小宽度 px, 相对基准字号的增量 px)。
+# 用 CSS 媒体查询而不是 JS/clamp/vw：hh.exe 里跑的是 MSHTML，媒体查询在
+# IE9+ 标准模式可用，旧文档模式会整段忽略、自动回落到基准字号，不会出错。
+# 阈值按"正文区宽度"（hh.exe 的视口 = 窗口宽 - 左侧导航）取整：
+# 从 800px 起每宽 120px 放大 1px，最多 +9（15 -> 24）。
+# 实测依据：100% 缩放、2724px 宽的窗口里正文区约 1900px，正文取到最高档。
+ADAPTIVE_FONT_START_WIDTH = 800
+ADAPTIVE_FONT_STEP_WIDTH = 120
+ADAPTIVE_FONT_MAX_DELTA = 9
+ADAPTIVE_FONT_STEPS = tuple(
+    (ADAPTIVE_FONT_START_WIDTH + i * ADAPTIVE_FONT_STEP_WIDTH, i + 1)
+    for i in range(ADAPTIVE_FONT_MAX_DELTA))
 
 # Windows 二进制目录需要的五个系统流（--toc-mode binary 时校验其齐全）
 BINARY_TOC_STREAMS = {"/#TOCIDX", "/#TOPICS", "/#STRINGS", "/#URLTBL", "/#URLSTR"}
@@ -789,15 +803,18 @@ def finalize_html(html_text: str) -> str:
 
 CSS = """
 /* TiDB Docs CHM — 兼容 Windows hh.exe 的离线版式
-   字号策略：html 让 CSS 像素按 1:1 走（不做窗口自适应）；body 的
-   font-size:__BODY_FONT_SIZE__px 是唯一基准，标题/代码/表格一律用 em
-   相对它表达，以后整体调字号只改基准、比例自动保持。
+   字号策略：html 让 CSS 像素按 1:1 走；body 的 font-size:__BODY_FONT_SIZE__px
+   是唯一基准，标题/代码/表格一律用 em 相对它表达，所以正文区变宽时只需在
+   媒体查询里改 body 基准，整页等比放大。分档由 build_css() 按 ADAPTIVE_FONT_STEPS
+   注入（--adaptive-font，默认开启）；关闭窗口自适应时正文保持恒定字号。
    Windows 左侧导航树不受这份样式控制，它由 /#SYSTEM 记录 16 的
-   Default Font（见 --nav-font-size）决定。
+   Default Font（见 --nav-font-size）决定，且不随窗口缩放。
    不使用 flex/grid/var/clamp/vw：hh.exe 内的 MSHTML 可能退回旧文档模式。 */
 html{font-size:100%}
 body{font-family:"Microsoft YaHei","Segoe UI","PingFang SC",Arial,sans-serif;
  font-size:__BODY_FONT_SIZE__px;line-height:1.70;color:#27364a;background:#fff;margin:0}
+/* 窗口自适应分档（build_css 注入；空串表示恒定字号） */
+__ADAPTIVE_FONT__
 .page{max-width:1120px;margin:0 auto;padding:22px 32px 44px}
 .brand{font-size:.86em;line-height:1.5;color:#697889;border-bottom:3px solid #c83044;
  padding-bottom:8px;letter-spacing:1px}
@@ -894,10 +911,44 @@ def resolve_render_options(lang: str, body_font_size: int,
                          nav_default_font=default_chm_font(lang, nav_font_size))
 
 
-def build_css(body_font_size: int = DEFAULT_BODY_FONT_SIZE) -> str:
-    """生成正文样式表；唯一基准是 body 字号，其余字号都是相对单位。"""
+def adaptive_font_sizes(body_font_size: int = DEFAULT_BODY_FONT_SIZE,
+                        steps: tuple = ADAPTIVE_FONT_STEPS,
+                        max_size: int = BODY_FONT_SIZE_RANGE[1]) -> list[tuple[int, int]]:
+    """窗口自适应的分档结果 [(最小视口宽度, 基准字号), ...]，已封顶与去重。"""
+    out: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    for min_width, delta in steps:
+        size = min(body_font_size + delta, max_size)
+        if size <= body_font_size or size in seen:
+            continue
+        seen.add(size)
+        out.append((min_width, size))
+    return out
+
+
+def adaptive_font_css(body_font_size: int = DEFAULT_BODY_FONT_SIZE,
+                      steps: tuple = ADAPTIVE_FONT_STEPS,
+                      max_size: int = BODY_FONT_SIZE_RANGE[1]) -> str:
+    """生成窗口自适应的媒体查询分档；字号封顶在 BODY_FONT_SIZE_RANGE 上限。
+
+    返回值可能为空串：基准已经到上限，或分档都被封顶抵消（此时正文恒定）。
+    """
+    return " ".join(
+        f"@media (min-width:{w}px){{body{{font-size:{size}px}}}}"
+        for w, size in adaptive_font_sizes(body_font_size, steps, max_size))
+
+
+def build_css(body_font_size: int = DEFAULT_BODY_FONT_SIZE,
+              adaptive: bool = True) -> str:
+    """生成正文样式表；唯一基准是 body 字号，其余字号都是相对单位。
+
+    adaptive=True 时额外写入按窗口宽度分档的媒体查询：正文区变宽逐档放大
+    基准字号，标题/代码/表格按 em 自动等比跟随。
+    """
     # 用 replace 而不是 .format()：样式表里有大量 {} 会被当成占位符。
-    return CSS.replace("__BODY_FONT_SIZE__", str(body_font_size))
+    steps = adaptive_font_css(body_font_size) if adaptive else ""
+    return (CSS.replace("__BODY_FONT_SIZE__", str(body_font_size))
+               .replace("__ADAPTIVE_FONT__", steps))
 
 PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="{lang}">
@@ -1409,6 +1460,14 @@ def main() -> int:
                     help=f"正文基准字号（px，默认 {DEFAULT_BODY_FONT_SIZE}，"
                          f"允许 {BODY_FONT_SIZE_RANGE[0]}~{BODY_FONT_SIZE_RANGE[1]}）；"
                          "标题/代码/表格是相对它的 em，比例不受影响")
+    ap.add_argument("--adaptive-font", dest="adaptive_font", action="store_true",
+                    default=True,
+                    help="正文按窗口宽度分档放大（默认开启，纯 CSS 媒体查询；"
+                         f"正文区 ≥{ADAPTIVE_FONT_START_WIDTH}px 起每 "
+                         f"{ADAPTIVE_FONT_STEP_WIDTH}px 逐档 +1px，"
+                         f"封顶 {BODY_FONT_SIZE_RANGE[1]}px）")
+    ap.add_argument("--no-adaptive-font", dest="adaptive_font", action="store_false",
+                    help="关闭窗口自适应，正文始终保持 --body-font-size 的恒定字号")
     ap.add_argument("--nav-font-size", type=int, default=DEFAULT_NAV_FONT_SIZE,
                     help=f"Windows CHM 左侧 Contents/Search 导航字号（pt，默认 "
                          f"{DEFAULT_NAV_FONT_SIZE}，允许 {NAV_FONT_SIZE_RANGE[0]}~"
@@ -1610,7 +1669,8 @@ def main() -> int:
         "许可与说明", args.lang)
     page_titles["index.html"] = args.title
     page_titles["license.html"] = "许可与说明"
-    pages["style.css"] = build_css(render_opts.body_font_size).encode("utf-8")
+    pages["style.css"] = build_css(render_opts.body_font_size,
+                                   adaptive=args.adaptive_font).encode("utf-8")
     pages["preview.html"] = build_preview(
         args.title, entries, len(pages), args.chm, render_opts.nav_font_size
     ).encode("utf-8")
@@ -1646,7 +1706,13 @@ def main() -> int:
     print(f"      Windows 二进制目录：{'启用' if want_binary_toc else '关闭'}")
     print("      Windows 全文搜索："
           + ("启用（由 chmcmd 生成）" if want_full_text_search else "关闭"))
-    print(f"      正文字号：{render_opts.body_font_size}px（标题/代码/表格按 em 相对缩放）")
+    if args.adaptive_font:
+        sizes = [str(s) for _w, s in adaptive_font_sizes(render_opts.body_font_size)]
+        adaptive_note = f"，窗口自适应分档 {'/'.join(sizes)}px" if sizes else "，窗口自适应已到上限"
+    else:
+        adaptive_note = "，窗口自适应已关闭"
+    print(f"      正文字号：{render_opts.body_font_size}px"
+          f"（标题/代码/表格按 em 相对缩放{adaptive_note}）")
     print(f"      Windows 导航字体：{render_opts.nav_default_font}")
     print("[5/6] 打包 CHM")
     chm_path = os.path.join(out, args.chm)

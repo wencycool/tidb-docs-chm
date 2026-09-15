@@ -155,7 +155,8 @@ git ls-remote --heads https://github.com/pingcap/docs-cn.git "release-*"
 | `--only-chm` | `--prune-chm` | 开启 | 对应 `--prune=chm`，只保留 CHM |
 | `--toc-mode=binary` | 可用空格传值 | `binary` | 写 `toc.hhc` 与 Windows 二进制目录（`hh.exe` 有目录页签） |
 | `--toc-mode=hhc` | 可用空格传值 | 无 | 只写 `toc.hhc`，Windows 侧无目录页签 |
-| `--body-font-size=N` | 可用空格传值 | `15` | 正文基准字号（px，12~20）；标题/代码/表格按 em 相对缩放 |
+| `--body-font-size=N` | 可用空格传值 | `15` | 正文基准字号（px，12~24）；标题/代码/表格按 em 相对缩放 |
+| `--adaptive-font` / `--no-adaptive-font` | 无 | 开启 | 正文按窗口宽度分档放大（纯 CSS 媒体查询）；关闭后恒定字号 |
 | `--nav-font-size=N` | 可用空格传值 | `10` | Windows 左侧 Contents/Search 导航字号（pt，8~14），写进 CHM 的 Default Font |
 | `--search=auto` | `--search auto` | `auto` | 有 `chmcmd` 时生成全文搜索库（`hh.exe` 有"搜索"页签），否则关闭并提示 |
 | `--search=fulltext` | `--search fulltext` | 无 | 强制生成全文搜索：必须用 `chmcmd`，否则构建失败，不会静默降级 |
@@ -274,7 +275,8 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 | `--prune MODE` | `none` | `none` 保留全部；`hhp` 保留 CHM/HHP/HHC；`chm` 仅保留 CHM |
 | `--compiler MODE` | `auto` | `auto`、`builtin` 或 `chmcmd`，详见第 8 节 |
 | `--search MODE` | `auto` | `auto`、`fulltext` 或 `none`：Windows"搜索"页签用的全文搜索，详见第 8.3 节 |
-| `--body-font-size N` | `15` | 正文基准字号（px，12~20）；其余字号是相对它的 `em`，详见第 9.3 节 |
+| `--body-font-size N` | `15` | 正文基准字号（px，12~24）；其余字号是相对它的 `em`，详见第 9.3 节 |
+| `--adaptive-font` / `--no-adaptive-font` | 开启 | 正文按窗口宽度分档放大（`--adaptive-font`）/ 恒定字号（`--no-adaptive-font`），详见第 9.3 节 |
 | `--nav-font-size N` | `10` | Windows 导航窗格字号（pt，8~14）；写进 `.hhp` 的 `Default Font` 与 `/#SYSTEM` 记录 16 |
 | `--image-profile PROFILE` | `compact` | `original`、`compact` 或 `tiny`，详见第 7 节 |
 | `--image-max-width N` | 档位值 | 覆盖图片最大宽度；`0` 表示不缩放 |
@@ -436,23 +438,34 @@ CHM 都没有），而同一个 CHM 在 `hh.exe` 里仍然正常打开——区�
 | 区域 | 控制方式 | 参数 |
 | --- | --- | --- |
 | 正文 | `style.css`：`body` 唯一基准字号 + 标题/代码/表格的 `em` | `--body-font-size`（默认 15px） |
+| 正文窗口自适应 | `style.css`：按正文区宽度的媒体查询分档放大基准字号 | `--adaptive-font`（默认开启）/ `--no-adaptive-font` |
 | 左侧 Contents/Search 导航 | CHM 的 `Default Font`（`.hhp` 与 `/#SYSTEM` 记录 16） | `--nav-font-size`（默认 10pt） |
 
 左侧导航是 Windows 原生控件，CSS 管不到它，所以只能通过 `Default Font` 指定
 "字体名,点数,字符集"：中文构建写 `Microsoft YaHei,10,134`，英文构建写
 `Segoe UI,10,0`。两条打包后端（`chmcmd`、builtin）写的是同一个取值，
 `docs.hhp`、`docs.chmcmd.hhp` 与 builtin 的 `/#SYSTEM` 三者一致。
+**它只能给一个固定 pt，不可能随窗口缩放**；能随窗口自适应的是右侧正文。
 
-不做"按窗口宽度动态缩放字号"：CHM 跑在 `hh.exe`/MSHTML 里，正确策略是让字号
-策略保持稳定、由 Windows 的 DPI 缩放去放大，因此样式表里不使用 JS、`vw` 或
-`clamp()`。正文基准保持 15px（而不是直接 17~18px）：左侧目录还要占 280~340px，
-15px 在可读性与信息密度之间更平衡。
+正文默认按窗口宽度分档放大（`--adaptive-font`），纯 CSS 媒体查询实现，
+不使用 JS / `vw` / `clamp()`：
 
-内网机器上仍嫌小时，改参数即可，不需要改代码：
+| 正文区宽度 | <800 | ≥800 | ≥920 | ≥1040 | ≥1160 | ≥1280 | ≥1400 | ≥1520 | ≥1640 | ≥1760 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 基准字号 | 15px | 16px | 17px | 18px | 19px | 20px | 21px | 22px | 23px | 24px |
+
+即"≥800px 起每宽 120px 放大 1px，最多 +9px"。标题/代码/表格都是基准的 `em`，
+所以只改 `body` 一个字就整页等比放大；字号封顶在 `BODY_FONT_SIZE_RANGE` 上限
+（24px）。旧文档模式下媒体查询会被整段忽略，自动回落到基准字号，不会出错。
+不想要这种分档时：
 
 ```bash
-./build.sh --body-font-size 16 --nav-font-size 11
+./build.sh --no-adaptive-font            # 正文恒定字号
+./build.sh --body-font-size 16 --nav-font-size 11   # 内网机器仍偏小时整体调大一档
 ```
+
+`hh.exe` 的视口宽度 = 窗口宽 − 左侧导航宽度，所以上面的阈值会略晚于窗口尺寸触发。
+`make preview` 生成的预览页把正文放进 iframe，本地拖动浏览器窗口即可看到分档效果。
 
 完整说明、Windows 实机测试矩阵与检查清单见
 [`docs/windows-font-dpi.md`](docs/windows-font-dpi.md)。

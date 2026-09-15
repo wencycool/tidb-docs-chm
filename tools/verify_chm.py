@@ -320,6 +320,14 @@ def main() -> int:
         base = re.search(r"body\{[^}]*font-size:([0-9.]+)px", css_text)
         print("正文字号  : " + (f"{base.group(1)}px（标题/代码/表格按 em 相对缩放）"
                                 if base else "未在 style.css 中声明"))
+        # 窗口自适应：媒体查询分档，正文区变宽时逐档放大 body 基准字号
+        steps = re.findall(
+            r"@media \(min-width:(\d+)px\)\{body\{font-size:(\d+)px\}\}", css_text)
+        if steps:
+            detail = " ".join(f"≥{w}→{s}px" for w, s in steps)
+            print(f"窗口自适应: 开启，{len(steps)} 档（{detail}）")
+        else:
+            print("窗口自适应: 关闭或基准已到上限，正文恒定字号")
 
     html_files = [n for n in names if n.endswith(".html")]
     if (root or readable) and html_files:

@@ -467,3 +467,58 @@ Windows 实机确认搜索结果列表标题显示正常（本机只能证明字
 .venv/bin/python tools/verify_chm.py <chm>
 chmls extractall <chm> /tmp/x && grep -c '`' /tmp/x/toc.hhc   # 期望 0
 ```
+
+## 13. 2026-09-15：正文没有随窗口自适应（上一轮只改了导航）
+
+### 13.1 现象与成因
+
+现象：用户反馈"目录（左侧导航）字号变了，正文没变，还是很小、也不随窗口变化"。
+
+核对后确认不是漏改，而是上一轮（第 10 节）**主动选择了 DPI 适配**，并在
+`docs/windows-font-dpi.md` 里写明"不做按窗口宽度动态缩放字体"。那一轮正文只从
+14px 调到 15px（`--body-font-size`），肉眼几乎无感；真正明显变化的是左侧导航的
+`Default Font=Microsoft YaHei,10,134`，所以观感是"目录改了、正文没改"。
+
+产物核对：`dist/.../style.css` 里只有 `body{font-size:15px}`，全文件 `@media` 0 处。
+
+### 13.2 本轮修改
+
+改成"小窗口恒定基准 + 宽窗口分档放大"的纯 CSS 方案：
+
+- `ADAPTIVE_FONT_START_WIDTH=800`、`ADAPTIVE_FONT_STEP_WIDTH=120`、
+  `ADAPTIVE_FONT_MAX_DELTA=9`（生成 `ADAPTIVE_FONT_STEPS`）：正文区
+  （`hh.exe` 视口 = 窗口宽 − 左侧导航）达到阈值时，`body` 基准字号
+  15→16→…→24px；标题/代码/表格都是 `em`，整页等比放大。
+- `adaptive_font_sizes()` / `adaptive_font_css()` 负责分档、封顶（24px）与去重；
+  `build_css(base, adaptive=True)` 把结果注入样式表末尾的占位行。
+  基准取到上限或 `--no-adaptive-font` 时占位为空串，正文回到恒定字号。
+- 只用 CSS 媒体查询，不用 JS / `vw` / `clamp()`：MSHTML 旧文档模式会整段忽略
+  媒体查询，自动回落到基准字号，属于安全降级。
+- 新增 `--adaptive-font`（默认）/ `--no-adaptive-font`，`build.sh` 透传；
+  构建日志打印分档；`verify_chm.py` 报告"窗口自适应：开启，N 档（≥800→16px …）"。
+- `.page{max-width:1120px}` 不变：窗口变宽只放大字号，每行字符数反而更舒服。
+- **左侧导航仍无法随窗口缩放**（Windows 原生控件，只有固定 pt），README 与
+  `docs/windows-font-dpi.md` 已明确这条边界。
+
+### 13.3 本机证据
+
+- `build_css(15)` 含 9 条 `@media (min-width:...){body{font-size:Npx}}`
+  （800/920/…/1760px → 16/17/…/24px），且**只**改 `body` 字号；
+  `build_css(15, adaptive=False)` 与 `build_css(24)` 均不含媒体查询。
+- 解析侧对 `@media (min-width:\d+px){body{font-size:\d+px}}` 计数 == 分档数，
+  可防"占位符被替换两次"这类错误——首版实现把占位符也写进了 CSS 注释，
+  结果规则被注入两遍（一份落在注释里成为死代码），正是这条用例抓出来的。
+- `make test` 全绿（新增用例"正文窗口自适应分档" + 1239 篇文档扫描 +
+  chmcmd 搜索集成测试）。
+- 预览页正文走 iframe + 同一份 `style.css`，`make preview` 后拖动浏览器窗口
+  即可本地复现分档，无需 Windows。
+- **实机反证与校准**（用户提供 2724×1539 截图，本机逐像素测量）：正文段落行距
+  33px ÷ 行高 1.70 → 正文实际约 19px；正文栏 1055px ≈ `.page` 的 1056px 内容宽
+  → 系统缩放 100%，媒体查询**确实在 `hh.exe` 里生效**。用户仍觉偏小，于是把上限
+  从 20px 提到 24px、阈值下移到 800~1760px，使 ~1900px 的正文区直接取到 24px 封顶。
+
+### 13.4 仍未闭环
+
+阈值是按"100% 缩放、2724px 宽窗口 → 正文区约 1900px"校准的；换屏幕或改系统缩放后
+可能要在 `ADAPTIVE_FONT_START_WIDTH` / `ADAPTIVE_FONT_STEP_WIDTH` /
+`ADAPTIVE_FONT_MAX_DELTA` 上微调（测试跟着常量走，不用改两份）。

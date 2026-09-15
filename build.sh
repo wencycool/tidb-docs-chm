@@ -14,6 +14,7 @@
 #   ./build.sh --search fulltext  # 必须生成 Windows"搜索"页签（缺 chmcmd 就报错退出）
 #   ./build.sh --no-search    # 不写全文搜索库（hh.exe 没有"搜索"页签）
 #   ./build.sh --body-font-size 16 --nav-font-size 11  # 正文/左侧导航整体调大一号
+#   ./build.sh --no-adaptive-font  # 关闭正文"按窗口宽度分档放大"（默认开启）
 #
 # 产物默认只保留 CHM；HTML/工程文件构建成功后自动清理。
 # 含图片版默认同时做两层压缩：图片 compact 档（宽≤1200 + PNG 256 色）+ CHM LZX。
@@ -22,7 +23,9 @@
 # --search auto（默认）在 chmcmd 可用时开启，否则关闭并打印提示；
 # --search fulltext 是强约束，缺 chmcmd 直接失败，不会静默退化成没有搜索。
 # 正文字号（px，默认 15）与 Windows 左侧导航字号（pt，默认 10）可调：
-# 正文由 style.css 的基准字号 + em 相对字号控制，导航由 CHM 的 Default Font 控制。
+# 正文由 style.css 的基准字号 + em 相对字号控制，并按窗口宽度分档放大
+# （--adaptive-font 默认开启，纯 CSS 媒体查询；--no-adaptive-font 可关）；
+# 导航是 Windows 原生控件，只能由 CHM 的 Default Font 给固定 pt，不随窗口缩放。
 # 页脚日期取文档源码 HEAD 提交日期，可用 SOURCE_DATE_EPOCH 覆盖以保证可复现。
 # 幂等可重复执行：venv、源码仓库、产物均自动准备/更新。
 set -euo pipefail
@@ -129,6 +132,9 @@ while [ "$#" -gt 0 ]; do
             fi
             FONT_ARGS+=("$arg=$2")
             shift
+            ;;
+        --adaptive-font|--no-adaptive-font)
+            FONT_ARGS+=("$arg")
             ;;
         --image-max-width|--image-colors|--image-jpeg-quality)
             if [ "$#" -lt 2 ]; then
