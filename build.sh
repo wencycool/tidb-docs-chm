@@ -13,6 +13,7 @@
 #   ./build.sh --toc-mode hhc # 只写传统目录（Windows 侧无目录页签，便于排查侧栏）
 #   ./build.sh --search fulltext  # 必须生成 Windows"搜索"页签（缺 chmcmd 就报错退出）
 #   ./build.sh --no-search    # 不写全文搜索库（hh.exe 没有"搜索"页签）
+#   ./build.sh --body-font-size 16 --nav-font-size 11  # 正文/左侧导航整体调大一号
 #
 # 产物默认只保留 CHM；HTML/工程文件构建成功后自动清理。
 # 含图片版默认同时做两层压缩：图片 compact 档（宽≤1200 + PNG 256 色）+ CHM LZX。
@@ -20,6 +21,8 @@
 # Windows"搜索"页签需要全文搜索库（chmcmd 生成）+ 窗口定义里的搜索页签位：
 # --search auto（默认）在 chmcmd 可用时开启，否则关闭并打印提示；
 # --search fulltext 是强约束，缺 chmcmd 直接失败，不会静默退化成没有搜索。
+# 正文字号（px，默认 15）与 Windows 左侧导航字号（pt，默认 10）可调：
+# 正文由 style.css 的基准字号 + em 相对字号控制，导航由 CHM 的 Default Font 控制。
 # 页脚日期取文档源码 HEAD 提交日期，可用 SOURCE_DATE_EPOCH 覆盖以保证可复现。
 # 幂等可重复执行：venv、源码仓库、产物均自动准备/更新。
 set -euo pipefail
@@ -39,6 +42,7 @@ COMPILER="auto"
 TOC_MODE="binary"
 SEARCH="auto"            # auto=chmcmd 可用时开启全文搜索；fulltext=强制；none=关闭
 IMAGE_ARGS=()
+FONT_ARGS=()             # --body-font-size / --nav-font-size 透传
 while [ "$#" -gt 0 ]; do
     arg="$1"
     case "$arg" in
@@ -114,6 +118,17 @@ while [ "$#" -gt 0 ]; do
             ;;
         --image-max-width=*|--image-colors=*|--image-jpeg-quality=*)
             IMAGE_ARGS+=("$arg")
+            ;;
+        --body-font-size=*|--nav-font-size=*)
+            FONT_ARGS+=("$arg")
+            ;;
+        --body-font-size|--nav-font-size)
+            if [ "$#" -lt 2 ]; then
+                echo "$arg 需要一个数值" >&2
+                exit 2
+            fi
+            FONT_ARGS+=("$arg=$2")
+            shift
             ;;
         --image-max-width|--image-colors|--image-jpeg-quality)
             if [ "$#" -lt 2 ]; then
@@ -220,6 +235,9 @@ build_target() {
                 --prune "$PRUNE" --compiler "$COMPILER" --all --lang zh
                 --toc-mode "$TOC_MODE" --search "$SEARCH"
                 --source-ref "$REF")
+    if [ "${#FONT_ARGS[@]}" -gt 0 ]; then
+        args+=("${FONT_ARGS[@]}")
+    fi
     if [ "$images" = 1 ]; then
         args+=(--images)
         if [ "${#IMAGE_ARGS[@]}" -gt 0 ]; then

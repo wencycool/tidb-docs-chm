@@ -16,6 +16,7 @@ verify_chm.py —— 检查 CHM 的直接打开、离线资源、目录与版式
   8. ``/#SYSTEM`` 是否明确声明 ``index.html`` 和 ``toc.hhc``
   9. ITSF 是否按 Section 0、ITSP 目录、正文的 Windows 标准顺序写入
  10. Windows"搜索"页签所需的全文搜索结构是否与构建意图一致
+ 11. 正文基准字号（``style.css``）与 Windows 导航字体（``/#SYSTEM`` 记录 16）
 
 用法：
     python3 tools/verify_chm.py dist/tidb-docs-cn/tidb-docs-cn.chm
@@ -49,6 +50,7 @@ from chmwriter import (  # noqa: E402
     detect_full_text_search_entries,
     detect_keyword_index_entries,
     parse_system_records,
+    system_default_font,
     system_fulltext_search_flag,
     windows_search_tab_enabled,
 )
@@ -273,6 +275,7 @@ def main() -> int:
     print("导航窗格  : " + ({True: "窗口定义已开启'搜索'页签",
                             False: "窗口定义未开启'搜索'页签",
                             None: "无窗口定义（hh.exe 用默认窗口，只有目录）"}[search_tab]))
+    print("导航字体  : " + (system_default_font(system) or "未声明（用 Windows 系统默认字体）"))
     for note in search_notes:
         print(f"  [提示] {note}")
     if not search_ok:
@@ -306,6 +309,16 @@ def main() -> int:
         if missing:
             ok = False
             print("  [失败] 目录指向的页面不在 CHM 内：", missing[:5])
+
+    # 版式：正文基准字号写在 style.css 里，标题/代码/表格都是相对它的 em
+    if root or readable:
+        try:
+            css_text = read_bytes("/style.css").decode("utf-8-sig", "replace")
+        except (KeyError, OSError):
+            css_text = ""
+        base = re.search(r"body\{[^}]*font-size:([0-9.]+)px", css_text)
+        print("正文字号  : " + (f"{base.group(1)}px（标题/代码/表格按 em 相对缩放）"
+                                if base else "未在 style.css 中声明"))
 
     html_files = [n for n in names if n.endswith(".html")]
     if root or readable:

@@ -22,7 +22,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import build_chm as B  # noqa: E402
-from chmwriter import ChmReader  # noqa: E402
+from chmwriter import ChmReader, ChmWriter, parse_system_records  # noqa: E402
 
 EMPTY_STATS = {
     "videos": 0, "images": 0, "image_paths": [], "vars": 0, "vars_unknown": {},
@@ -470,6 +470,85 @@ def cases() -> bool:
         ok &= check("CHM 时间戳可复现", "正文",
                     ("记录 10 来自 build_time",
                      10 in recs and struct.unpack("<I", recs[10])[0] == (1700000000 * 1000) % (1 << 32)))
+
+    # 26. 正文版式改成"唯一基准字号 + em 相对字号"：整体调字号只改 --body-font-size，
+    #     标题/代码/表格比例自动保持；不再出现写死的 px 字号（基准除外）。
+    css15 = B.build_css(15)
+    css16 = B.build_css(16)
+    heading_px = re.findall(r"(?:h1|h2|h3|h4)\{font-size:[0-9.]+px", css15)
+    ok &= check("正文字号相对化", "正文",
+                ("基准字号随参数变化",
+                 "font-size:15px" in css15 and "font-size:16px" in css16),
+                ("标题用 em", "h1{font-size:1.85em" in css15
+                 and "h2{font-size:1.45em" in css15
+                 and "h3{font-size:1.22em" in css15
+                 and "h4{font-size:1.08em" in css15),
+                ("代码与表格用 em",
+                 "code{font-size:.94em" in css15
+                 and "pre{font-size:.92em" in css15
+                 and "table{border-collapse:collapse;margin:0;font-size:.94em" in css15),
+                ("保留正文最大宽度", "max-width:1120px" in css15),
+                ("正文行高 1.70", "line-height:1.70" in css15),
+                ("不再写死标题 px 字号", not heading_px),
+                ("不使用 clamp/vw 单位",
+                 "font-size:clamp(" not in css15
+                 and re.search(r"font-size:[^;]*[0-9]vw", css15) is None))
+
+    # 27. Windows 导航字体：Default Font 由语言 + --nav-font-size 决定。
+    ok &= check("导航字体取值", "正文",
+                ("中文微软雅黑 GB2312",
+                 B.default_chm_font("zh", 10) == "Microsoft YaHei,10,134"),
+                ("英文 Segoe UI",
+                 B.default_chm_font("en", 10) == "Segoe UI,10,0"),
+                ("随字号变化", B.default_chm_font("zh", 12) == "Microsoft YaHei,12,134"))
+
+    opts = B.resolve_render_options("zh", 15, 10)
+    ok &= check("版式参数组装", "正文",
+                ("正文 15px", opts.body_font_size == 15),
+                ("导航 10pt", opts.nav_font_size == 10),
+                ("Default Font 一致",
+                 opts.nav_default_font == "Microsoft YaHei,10,134"))
+    for lang, body, nav, label in [("zh", 11, 10, "正文字号过小"),
+                                   ("zh", 24, 10, "正文字号过大"),
+                                   ("zh", 15, 6, "导航字号过小"),
+                                   ("zh", 15, 20, "导航字号过大")]:
+        try:
+            B.resolve_render_options(lang, body, nav)
+        except ValueError:
+            ok &= check(f"版式参数越界：{label}", "正文", ("按预期报错", True))
+        else:
+            ok &= check(f"版式参数越界：{label}", "正文", ("按预期报错", False))
+
+    # 28. HHP 的 Default Font 与 /#SYSTEM 记录 16（builtin writer）必须一致。
+    hhp_font = B.build_hhp("TiDB", "t.chm", ["index.html", "toc.hhc"], lang="zh",
+                           full_text_search=True,
+                           default_font="Microsoft YaHei,10,134")
+    hhp_nofont = B.build_hhp("TiDB", "t.chm", ["index.html", "toc.hhc"], lang="zh")
+    ok &= check("HHP 声明导航字体", "正文",
+                ("写入 Default Font",
+                 "Default Font=Microsoft YaHei,10,134" in hhp_font),
+                ("未传时不写", "Default Font=" not in hhp_nofont),
+                ("不破坏搜索页签位", ",0x63520," in hhp_font))
+    writer = ChmWriter(
+        title="TiDB",
+        default_page="index.html",
+        language_id=0x0804,
+        toc_name="toc.hhc",
+        index_name="",
+        default_font="Microsoft YaHei,10,134",
+        include_binary_toc=True,
+        build_time=1700000000,
+    )
+    records16 = parse_system_records(writer._system_file())
+    ok &= check("builtin 写入导航字体", "正文",
+                ("存在记录 16", 16 in records16),
+                ("取值与 Default Font 一致",
+                 16 in records16
+                 and records16[16][0].split(b"\x00", 1)[0].decode("gbk")
+                 == "Microsoft YaHei,10,134"))
+    ok &= check("preview 侧栏用 pt", "正文",
+                ("10pt", "font-size:10pt" in B.build_preview("T", [], 0, "t.chm", 10)),
+                ("12pt", "font-size:12pt" in B.build_preview("T", [], 0, "t.chm", 12)))
     return ok
 
 

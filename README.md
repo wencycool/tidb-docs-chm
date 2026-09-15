@@ -33,6 +33,7 @@ tidb-docs-chm/
 ├── docs/
 │   ├── verification.md      兼容性与版式问题的验收记录
 │   ├── windows-search.md    Windows"搜索"页签的说明与实机验收清单
+│   ├── windows-font-dpi.md  Windows 字号 / DPI 适配说明与实机测试矩阵
 │   └── screenshots/         目录、编码、压缩和排版验收截图
 ├── repos/
 │   └── docs-cn/             官方文档仓库，由 build.sh 自动克隆或更新，不提交
@@ -154,6 +155,8 @@ git ls-remote --heads https://github.com/pingcap/docs-cn.git "release-*"
 | `--only-chm` | `--prune-chm` | 开启 | 对应 `--prune=chm`，只保留 CHM |
 | `--toc-mode=binary` | 可用空格传值 | `binary` | 写 `toc.hhc` 与 Windows 二进制目录（`hh.exe` 有目录页签） |
 | `--toc-mode=hhc` | 可用空格传值 | 无 | 只写 `toc.hhc`，Windows 侧无目录页签 |
+| `--body-font-size=N` | 可用空格传值 | `15` | 正文基准字号（px，12~20）；标题/代码/表格按 em 相对缩放 |
+| `--nav-font-size=N` | 可用空格传值 | `10` | Windows 左侧 Contents/Search 导航字号（pt，8~14），写进 CHM 的 Default Font |
 | `--search=auto` | `--search auto` | `auto` | 有 `chmcmd` 时生成全文搜索库（`hh.exe` 有"搜索"页签），否则关闭并提示 |
 | `--search=fulltext` | `--search fulltext` | 无 | 强制生成全文搜索：必须用 `chmcmd`，否则构建失败，不会静默降级 |
 | `--no-search` | `--search=none` | 无 | 不生成全文搜索库（体积更小，`hh.exe` 无"搜索"页签） |
@@ -271,6 +274,8 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 | `--prune MODE` | `none` | `none` 保留全部；`hhp` 保留 CHM/HHP/HHC；`chm` 仅保留 CHM |
 | `--compiler MODE` | `auto` | `auto`、`builtin` 或 `chmcmd`，详见第 8 节 |
 | `--search MODE` | `auto` | `auto`、`fulltext` 或 `none`：Windows"搜索"页签用的全文搜索，详见第 8.3 节 |
+| `--body-font-size N` | `15` | 正文基准字号（px，12~20）；其余字号是相对它的 `em`，详见第 9.3 节 |
+| `--nav-font-size N` | `10` | Windows 导航窗格字号（pt，8~14）；写进 `.hhp` 的 `Default Font` 与 `/#SYSTEM` 记录 16 |
 | `--image-profile PROFILE` | `compact` | `original`、`compact` 或 `tiny`，详见第 7 节 |
 | `--image-max-width N` | 档位值 | 覆盖图片最大宽度；`0` 表示不缩放 |
 | `--image-colors N` | 档位值 | 覆盖 PNG 色数；`0` 表示保持真彩 |
@@ -418,6 +423,34 @@ CHM 都没有），而同一个 CHM 在 `hh.exe` 里仍然正常打开——区�
 目录卫生依靠"不生成关键词索引文件"保证，而不是删除二进制目录流；全文搜索库
 （`/$FIftiMain`）不参与目录树，按第 8.3 节单独判定。
 
+### 9.3 字号、DPI 与导航字体
+
+正文和 Windows 左侧导航是两条独立通路，必须分开调：
+
+| 区域 | 控制方式 | 参数 |
+| --- | --- | --- |
+| 正文 | `style.css`：`body` 唯一基准字号 + 标题/代码/表格的 `em` | `--body-font-size`（默认 15px） |
+| 左侧 Contents/Search 导航 | CHM 的 `Default Font`（`.hhp` 与 `/#SYSTEM` 记录 16） | `--nav-font-size`（默认 10pt） |
+
+左侧导航是 Windows 原生控件，CSS 管不到它，所以只能通过 `Default Font` 指定
+"字体名,点数,字符集"：中文构建写 `Microsoft YaHei,10,134`，英文构建写
+`Segoe UI,10,0`。两条打包后端（`chmcmd`、builtin）写的是同一个取值，
+`docs.hhp`、`docs.chmcmd.hhp` 与 builtin 的 `/#SYSTEM` 三者一致。
+
+不做"按窗口宽度动态缩放字号"：CHM 跑在 `hh.exe`/MSHTML 里，正确策略是让字号
+策略保持稳定、由 Windows 的 DPI 缩放去放大，因此样式表里不使用 JS、`vw` 或
+`clamp()`。正文基准保持 15px（而不是直接 17~18px）：左侧目录还要占 280~340px，
+15px 在可读性与信息密度之间更平衡。
+
+内网机器上仍嫌小时，改参数即可，不需要改代码：
+
+```bash
+./build.sh --body-font-size 16 --nav-font-size 11
+```
+
+完整说明、Windows 实机测试矩阵与检查清单见
+[`docs/windows-font-dpi.md`](docs/windows-font-dpi.md)。
+
 ## 10. Markdown、链接与资源处理
 
 | 源文档内容 | 构建结果 |
@@ -454,7 +487,7 @@ make test
 
 测试覆盖列表、嵌套代码块、引用块、HTML 容器、模板清理、图片语法、官网链接、标题锚点、
 有序列表类型、目录形态开关、二进制目录判定、构建日期可复现，以及 Windows CHM 二进制
-布局和启动目录。`make test` 还会跑一遍 `test_chm_search.py`：它用真实的 `chmcmd`
+布局和启动目录、正文字号相对化与 Windows 导航字体。`make test` 还会跑一遍 `test_chm_search.py`：它用真实的 `chmcmd`
 编译含 `TiKV`、`raftstore`、`TiFlash`、`learner` 的小样张，核对全文搜索库、
 `/#SYSTEM` 标志、窗口定义搜索页签位确实都已生成，且没有关键词索引；
 没有安装 `chmcmd` 时该项自动跳过。
@@ -486,6 +519,7 @@ make test
 - LZX 解包内容是否与打包输入一致。
 - 全文搜索三要件是否一致：`/$FIftiMain`、`/#SYSTEM` 全文搜索标志、
   `/#WINDOWS` 窗口定义的搜索页签位（`--expect-search yes|no|auto`）。
+- 正文基准字号（`style.css`）与 Windows 导航字体（`/#SYSTEM` 记录 16）是否写入。
 
 ### 11.3 可选的独立工具检查
 

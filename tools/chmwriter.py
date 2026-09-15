@@ -117,6 +117,24 @@ def system_fulltext_search_flag(data: bytes) -> bool | None:
     return struct.unpack_from("<I", values[0], 8)[0] != 0
 
 
+# /#SYSTEM 记录 16：Default Font，格式 `字体名,点数,字符集`。
+# 它决定 hh.exe 左侧 Contents/Search 导航树的字体与字号（原生控件，CSS 管不到）。
+SYSTEM_RECORD_DEFAULT_FONT = 16
+
+
+def system_default_font(data: bytes) -> str | None:
+    """读 /#SYSTEM 记录 16 的导航窗格 Default Font；未声明返回 None。
+
+    取值形如 ``Microsoft YaHei,10,134``（字体名,点数,字符集），
+    按 CHM 的 ANSI 代码页（简体中文为 GBK）解码。
+    """
+    values = parse_system_records(data).get(SYSTEM_RECORD_DEFAULT_FONT, [])
+    if not values:
+        return None
+    raw = values[0].split(b"\x00", 1)[0]
+    return raw.decode(TOC_TEXT_ENCODING, "replace")
+
+
 # /#WINDOWS（窗口定义）：4 字节窗口数 + 4 字节条目大小 + 条目数组。
 # 条目 = HH_WINTYPE 的内嵌形态，字段用 #STRINGS 偏移代替指针；
 # 偏移 0x10 是 fsWinProperties（导航窗格样式位）。

@@ -298,3 +298,59 @@ chmls extractall dist/tidb-docs-cn/tidb-docs-cn.chm /tmp/c
   侧也没有实机记录，本轮只能证明结构齐备且与 chmcmd 自身读取一致。
 - 若实机仍无"搜索"页签，按 `docs/windows-search.md` 第 5 节逐级兜底，首选"在
   Windows 上用 `hhc.exe` 重编 `docs.hhp`"。
+
+## 10. 2026-09-15：Windows 字号 / DPI 适配
+
+### 10.1 现象与成因
+
+现象：CHM 在 Windows `hh.exe` 里左侧导航与正文整体偏小，1080p + 125%/150%
+缩放下尤其明显。
+
+成因是两条通路各自的问题：
+
+- 正文样式表把 `14px`/`13px` 写死在每条规则里，没有统一基准，也没有跟随
+  Windows/D 缩放放大的余地；
+- 左侧 Contents/Search 导航是 Windows 原生控件，**根本不读正文 CSS**，
+  它的字体只能来自 CHM 的 `Default Font`（`/#SYSTEM` 记录 16），而之前
+  工程文件没有声明这一项，于是用系统默认值；
+- 预览页的模拟侧栏写死 `13.5px`，与 Windows 真实 pt 语义不一致，看不出问题。
+
+### 10.2 本轮修改
+
+- 正文样式表改成"唯一基准 + 相对字号"：`html{font-size:100%}`、
+  `body{font-size:15px;line-height:1.70}`，`h1/h2/h3/h4` 为
+  `1.85em/1.45em/1.22em/1.08em`，`code .94em`、`pre .92em`、`table .94em`；
+  保留 `.page{max-width:1120px}`；不使用 JS / `vw` / `clamp()`。
+- 新增 `--body-font-size`（px，默认 15，范围 12~20）与 `--nav-font-size`
+  （pt，默认 10，范围 8~14）；`build_css(body_font_size)` 动态生成样式表。
+- 新增 `RenderOptions`（正文/导航字号 + `nav_default_font`）与
+  `default_chm_font(lang, nav_font_size)`：中文 `Microsoft YaHei,<pt>,134`、
+  英文 `Segoe UI,<pt>,0`。字体不放进 `BuildFeatures`：那是能力层。
+- `build_hhp()` 增加 `default_font`，在 `[OPTIONS]` 写 `Default Font=`；
+  `docs.hhp` 与 `docs.chmcmd.hhp` 同值；builtin `ChmWriter` 传同一个
+  `default_font`（底层 record 16 写入早已具备，无需改二进制格式）。
+- `build_preview()` 接收 `nav_font_size`，侧栏用 `font-size:<n>pt`。
+- `chmwriter.py` 增加 `system_default_font()` 读取记录 16；构建校验比对
+  "参数 vs 产物"，缺失或不一致直接失败；`verify_chm.py` 报告正文基准字号与
+  导航字体；`build.sh` 透传两个字号参数。
+- 新增 `docs/windows-font-dpi.md`（两条通路、默认规格、命令、Windows 实机
+  测试矩阵、检查清单、明确不做的方案），README 增加第 9.3 节。
+
+### 10.3 本机证据
+
+- `build_css(15)`：基准 `15px`，标题/代码/表格全部 `em`，无写死的标题 px
+  字号，无 `clamp`/`vw`；`build_css(16)` 只改基准，比例不变。
+- `build_hhp(..., default_font="Microsoft YaHei,10,134")` 写出
+  `Default Font=Microsoft YaHei,10,134`，且不改动 `[WINDOWS]` 的
+  `0x63520` / `0x63120` 搜索页签位（字体与 Search 正交）。
+- `chmcmd` 会把该行原样透传到 `/#SYSTEM` 记录 16（实测解包核对，
+  `system_default_font()` 读回 `Microsoft YaHei,10,134`）；builtin writer
+  写出的记录 16 同值；`test_render.py` 覆盖取值、范围校验与 record 16。
+- `make test` 全绿（渲染用例 + 1239 篇文档扫描 + chmcmd 搜索集成测试）。
+
+### 10.4 仍未闭环（需要 Windows 实机）
+
+- Contents/Search 导航在 100%/125%/150% 缩放下是否清晰可读、无裁切；
+- `Microsoft YaHei` 未安装时 Windows 的回退表现；
+- `Default Font` 第三段（字符集 134/0）在不同 HTML Help 编译器里的差异——
+  本阶段硬目标是"字体名 + 点数"生效。
