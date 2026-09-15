@@ -192,6 +192,10 @@ if ! "$PY" -c "import markdown" 2>/dev/null; then
     log "安装依赖 markdown"
     PIP_DISABLE_PIP_VERSION_CHECK=1 "$PY" -m pip install --quiet markdown
 fi
+if ! "$PY" -c "import pygments" 2>/dev/null; then
+    log "安装依赖 pygments（代码语法高亮）"
+    PIP_DISABLE_PIP_VERSION_CHECK=1 "$PY" -m pip install --quiet pygments
+fi
 if [ "$BUILD_MODE" != "plain" ] && ! "$PY" -c "import PIL" 2>/dev/null; then
     log "安装依赖 pillow（图片压缩用）"
     PIP_DISABLE_PIP_VERSION_CHECK=1 "$PY" -m pip install --quiet pillow
