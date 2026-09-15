@@ -36,6 +36,28 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import markdown  # noqa: E402
 
+# --------------------------------------------------------------------------
+# 构建期静态语法高亮（Pygments）
+#
+# CHM 的目标运行时是 Windows hh.exe（MSHTML），不跑任何脚本：高亮必须在构建
+# 阶段就展开成静态 <span>，不能在 CHM 里加载 highlight.js / Prism.js。
+# Pygments 只是构建依赖，不进 CHM、不联网，输出就是普通 HTML，MSHTML 兼容性好。
+# 没装 Pygments 时整条链路退化为原来的纯文本代码块，构建不失败、不报错退出。
+# --------------------------------------------------------------------------
+try:
+    from pygments import highlight as pygments_highlight
+    from pygments.formatters import HtmlFormatter
+    from pygments.lexers import get_lexer_by_name
+    from pygments.util import ClassNotFound
+
+    HAS_PYGMENTS = True
+except ImportError:  # 构建环境未安装 pygments：只影响高亮，不影响打包
+    pygments_highlight = None
+    HtmlFormatter = None
+    get_lexer_by_name = None
+    ClassNotFound = Exception
+    HAS_PYGMENTS = False
+
 from chmwriter import (  # noqa: E402
     ChmWriter,
     TocNode,
@@ -50,6 +72,18 @@ from chmwriter import (  # noqa: E402
 MD_EXTENSIONS = ["extra", "sane_lists", "toc", "attr_list", "md_in_html"]
 
 CALLOUT_KINDS = ("Note", "Tip", "Warning", "Caution", "Important", "Note ")
+
+
+def empty_stats() -> dict:
+    """构建统计项初值。键名只在这里定义一次，构建日志与回归测试共用。"""
+    return {
+        "videos": 0, "images": 0, "image_paths": [],
+        "vars": 0, "vars_unknown": {}, "ext_localized": 0, "ext_kept": 0,
+        "md_external": 0, "code_blocks": 0, "media_links": 0,
+        # 代码块：语法高亮 / 纯文本 / 没能高亮的语言分布
+        "code_highlighted": 0, "code_plain": 0, "code_unknown_lang": {},
+    }
+
 
 # 正文 HTML 统一带 UTF-8 BOM。hh.exe/第三方阅读器默认按系统 ANSI（中文=
 # CP936）解码，只声明 <meta charset> 不够；带 BOM 时它们会优先按 UTF-8 解码，
@@ -328,6 +362,109 @@ FENCE_LINE_RE = re.compile(
     r"(?P<mark>`{3,}|~{3,})[ \t]*(?P<lang>[A-Za-z0-9_+#.-]*).*$"
 )
 
+# fenced language -> Pygments lexer alias。只归并能明确判定等价的名字：
+# 原始名字优先交给 Pygments（mysql、toml、yaml 等它自己就有 lexer，不要硬改成
+# sql），只有 Pygments 认不出时才走别名，失败再退回纯文本。
+CODE_LANG_ALIASES = {
+    "sh": "bash",
+    "shell": "bash",
+    "console": "text",
+    "plaintext": "text",
+    "txt": "text",
+    "yml": "yaml",
+}
+
+# 明确不高亮的语言：执行计划、日志里出现 SELECT/FROM/WHERE 也不能猜成 SQL。
+# 只信 Markdown fenced language，不做任何自动语言检测。
+PLAIN_CODE_LANGUAGES = frozenset({"text", "plain", "none"})
+
+
+def normalize_code_language(lang: str) -> str:
+    """归一化 fenced language：小写 + 去掉空白，再按 alias 表归并。
+
+    未在表里的名字原样返回，交给 Pygments 自己判断（它支持的语言远多于本表，
+    不需要白名单限制）。
+    """
+    value = (lang or "").strip().lower()
+    return CODE_LANG_ALIASES.get(value, value)
+
+
+def rendered_code_text(html_text: str) -> str:
+    """高亮后的可见文本：剥掉标签再反转义。
+
+    用于核对"高亮只改 presentation、不改 code content"：代码里的 ``<`` / ``&``
+    在生成时是 `&lt;` / `&amp;`，剥标签不会误删它们。
+    """
+    return html_lib.unescape(re.sub(r"<[^>]+>", "", html_text))
+
+
+def note_code_fallback(stats: dict | None, language: str) -> None:
+    """记一次"这个语言没能高亮"（未知语言 / lexer 异常 / 内容会被改动）。"""
+    if stats is None or not language:
+        return
+    unknown = stats.setdefault("code_unknown_lang", {})
+    unknown[language] = unknown.get(language, 0) + 1
+
+
+def highlight_code(raw_code: str, lang: str, stats: dict | None = None) -> str:
+    """构建期静态语法高亮；任何失败都退回安全纯文本。
+
+    Pygments 只负责内部 token `<span>`（HtmlFormatter(nowrap=True)），外层
+    仍由本项目控制：`<pre class="highlight"><code class="language-xxx">`。
+
+    失败链（全部退回当前纯文本块，绝不让单个代码块搞挂整份 CHM）：
+      Pygments 未安装 / 语言为空 / 语言是 text|plain|none /
+      lexer 不存在（ClassNotFound）/ lexer 抛异常 / 高亮后可见文本与原码不一致。
+    """
+    language = normalize_code_language(lang)
+
+    def plain() -> str:
+        if stats is not None:
+            stats["code_plain"] = stats.get("code_plain", 0) + 1
+        escaped = html_lib.escape(raw_code)
+        if language:
+            cls = html_lib.escape(language, quote=True)
+            return f'<pre><code class="language-{cls}">{escaped}</code></pre>'
+        return f"<pre><code>{escaped}</code></pre>"
+
+    if not language or language in PLAIN_CODE_LANGUAGES:
+        return plain()
+
+    if not HAS_PYGMENTS:
+        note_code_fallback(stats, language)
+        return plain()
+
+    try:
+        # stripnl/ensurenl 默认会在首尾增删换行；关掉它们高亮才是纯 presentation。
+        lexer = get_lexer_by_name(language, stripnl=False, ensurenl=False)
+    except ClassNotFound:
+        note_code_fallback(stats, language)
+        return plain()
+    except Exception:
+        return plain()
+
+    try:
+        rendered = pygments_highlight(raw_code, lexer, HtmlFormatter(nowrap=True))
+    except Exception:
+        return plain()
+
+    # HtmlFormatter 总会给最后一行补一个行终止符；原代码本身不以换行结束时，
+    # 把这一个多余的 \n 去掉，剩下的"可见文本必须逐字节等于原码"就是硬约束。
+    if rendered.endswith("\n") and not raw_code.endswith("\n"):
+        rendered = rendered[:-1]
+
+    # 最后一道闸：任何 lexer 只要动了可见文本，就宁可不高亮也不能改代码内容。
+    if rendered_code_text(rendered) != raw_code:
+        note_code_fallback(stats, language)
+        return plain()
+
+    if stats is not None:
+        stats["code_highlighted"] = stats.get("code_highlighted", 0) + 1
+    cls = html_lib.escape(language, quote=True)
+    return (f'<pre class="highlight"><code class="language-{cls}">'
+            f'{rendered}</code></pre>')
+
+
 # 代码块占位符。Python-Markdown 只把「行首缩进 < 4 空格」的原始 HTML 当块处理，
 # 而列表项里的代码块必然缩进 ≥ 4 空格（引用块里的还要带 `> ` 前缀），直接把
 # `<pre><code>` 写进正文会被当成段落文字再解析一遍：`# 注释` 变成标题、代码被
@@ -342,6 +479,9 @@ def convert_fences(text: str, stats: dict, code_blocks: list[str]) -> str:
     Python-Markdown 的 fenced_code 不认列表项内缩进 4 空格的围栏（```` ```shell ````
     会被当成行内 code，``` 直接出现在正文里），所以自己扫描围栏；换成占位符后
     代码内容也不会被后面的短代码/变量/链接替换规则误改。
+
+    这里只负责 fence 扫描与缩进剥离；代码内容的高亮（构建期静态 Pygments）
+    交给 highlight_code()，失败会退回纯文本，不影响占位符与恢复流程。
     """
     lines = text.split("\n")
     out: list[str] = []
@@ -375,9 +515,7 @@ def convert_fences(text: str, stats: dict, code_blocks: list[str]) -> str:
                 if prefix and ln.startswith(prefix):
                     ln = ln[len(prefix):]
             dedented.append(ln)
-        code = html_lib.escape("\n".join(dedented))
-        cls = f' class="language-{lang}"' if lang else ""
-        code_blocks.append(f"<pre><code{cls}>{code}</code></pre>")
+        code_blocks.append(highlight_code("\n".join(dedented), lang, stats))
         out.append(f"{lead}{quote}{indent}{CODE_TOKEN_FMT.format(len(code_blocks) - 1)}")
         count += 1
         i = j + 1
@@ -753,7 +891,9 @@ def docs_heading_slug(value: str, separator: str) -> str:
     return re.sub(r"\s", separator, value)
 
 
-BLOCK_IN_P_RE = re.compile(r"<p>\s*(<pre>.*?</pre>)\s*</p>", re.S | re.I)
+# 高亮的代码块是 `<pre class="highlight">`，所以这里必须容忍 `<pre>` 的属性，
+# 否则列表项里的高亮代码块会继续被 <p> 包着（HTML 非法，hh.exe 里会多出空行）。
+BLOCK_IN_P_RE = re.compile(r"<p>\s*(<pre\b[^>]*>.*?</pre>)\s*</p>", re.S | re.I)
 NAV_BLOCK_RE = re.compile(
     r'<div\s+class="(?:toc|nav)"[^>]*>.*?</div>', re.S | re.I
 )
@@ -836,6 +976,69 @@ code{font-size:.94em;background:#eff3f7;padding:2px 5px}
 pre{font-size:.92em;background:#f4f7fb;border:1px solid #dce4ef;border-left:3px solid #9cabbf;
  margin:12px 0;padding:12px 14px;overflow:auto;line-height:1.55;white-space:pre}
 pre code{font-size:1em;background:none;padding:0;color:#27364a}
+/* 构建期静态语法高亮（Pygments，HtmlFormatter(nowrap=True) 只产出内部 span）。
+   全部限定在 .highlight 作用域：不影响正文的行内 code，也不依赖 JS。
+   浅色主题，与页面 #f4f7fb 底色（pre 的背景）对比度足够但不刺眼。
+   .err 必须中性：TiDB 专有 SQL（ADMIN ...、Hint、SHOW STATS_HEALTHY 等）
+   会被 lexer 判成 Error token，Pygments 默认的"红底"在整页文档里非常刺眼；
+   真正的错误留给读者自己判断，这里只保证正文可读。 */
+.highlight .hll{background:#fff8c5}
+.highlight .c,
+.highlight .cm,
+.highlight .cp,
+.highlight .c1,
+.highlight .cs{color:#6e7781;font-style:italic}
+.highlight .k,
+.highlight .kc,
+.highlight .kd,
+.highlight .kn,
+.highlight .kp,
+.highlight .kr,
+.highlight .kt{color:#cf222e;font-weight:600}
+.highlight .s,
+.highlight .sa,
+.highlight .sb,
+.highlight .sc,
+.highlight .dl,
+.highlight .sd,
+.highlight .s1,
+.highlight .s2,
+.highlight .se,
+.highlight .sh,
+.highlight .si,
+.highlight .sx,
+.highlight .sr,
+.highlight .ss{color:#0a3069}
+.highlight .m,
+.highlight .mb,
+.highlight .mf,
+.highlight .mh,
+.highlight .mi,
+.highlight .mo,
+.highlight .il{color:#0550ae}
+.highlight .na,
+.highlight .nb,
+.highlight .bp,
+.highlight .nc,
+.highlight .nd,
+.highlight .ne,
+.highlight .nf,
+.highlight .nl,
+.highlight .nn,
+.highlight .nt,
+.highlight .nv,
+.highlight .vc,
+.highlight .vg,
+.highlight .vi,
+.highlight .vm{color:#8250df}
+.highlight .o,
+.highlight .ow{color:#57606a}
+.highlight .gd{color:#82071e;background:#ffebe9}
+.highlight .gi{color:#116329;background:#dafbe1}
+.highlight .err{color:inherit;background:transparent}
+pre.highlight{color:#24292f}
+pre.highlight code{color:inherit}
+pre.highlight span{font-family:inherit}
 .tablewrap{margin:12px 0;overflow:auto}
 table{border-collapse:collapse;margin:0;font-size:.94em;line-height:1.50;width:100%}
 td,th{border:1px solid #d8e1eb;padding:6px 9px;text-align:left;vertical-align:top}
@@ -1569,9 +1772,7 @@ def main() -> int:
     print(f"      章节 {len(entries)} 个，文档 {len(doc_paths)} 篇")
 
     print("[2/6] 转换 Markdown -> HTML")
-    stats = {"videos": 0, "images": 0, "image_paths": [],
-             "vars": 0, "vars_unknown": {}, "ext_localized": 0, "ext_kept": 0,
-             "md_external": 0, "code_blocks": 0, "media_links": 0}
+    stats = empty_stats()
     media_note = ("含图片资源（{} 档）".format(args.image_profile) if args.images
                   else "已移除视频与图片资源")
     variables: dict[str, str] = {}
@@ -1616,8 +1817,17 @@ def main() -> int:
           + (f"，未知变量 {stats['vars_unknown']}" if stats["vars_unknown"] else ""))
     print(f"      官网文档链接改内链 {stats['ext_localized']} 处，"
           f"保留外链 {stats['ext_kept']} 处")
-    print(f"      未收录文档的站内链接改指官网 {stats['md_external']} 处，"
-          f"代码块转换 {stats['code_blocks']} 个")
+    print(f"      未收录文档的站内链接改指官网 {stats['md_external']} 处")
+    print(f"      代码块转换 {stats['code_blocks']} 个："
+          f"语法高亮 {stats['code_highlighted']} 个，纯文本 {stats['code_plain']} 个")
+    if not HAS_PYGMENTS:
+        print("      [警告] 未安装 pygments，本次构建代码块全部为纯文本"
+              "（pip install pygments 或直接用 ./build.sh）")
+    if stats["code_unknown_lang"]:
+        top = sorted(stats["code_unknown_lang"].items(), key=lambda kv: (-kv[1], kv[0]))
+        shown = "、".join(f"{name}={count}" for name, count in top[:8])
+        more = f"（另有 {len(top) - 8} 类）" if len(top) > 8 else ""
+        print(f"      未高亮语言 {len(top)} 类：{shown}{more}")
     if stats["media_links"]:
         print(f"      未打包图片的裸链接退化为纯文本 {stats['media_links']} 处")
 

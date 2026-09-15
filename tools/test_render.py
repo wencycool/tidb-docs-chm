@@ -24,15 +24,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_chm as B  # noqa: E402
 from chmwriter import ChmReader, ChmWriter, parse_system_records  # noqa: E402
 
-EMPTY_STATS = {
-    "videos": 0, "images": 0, "image_paths": [], "vars": 0, "vars_unknown": {},
-    "ext_localized": 0, "ext_kept": 0, "md_external": 0, "code_blocks": 0,
-    "media_links": 0,
-}
+
+def empty_stats() -> dict:
+    """每次都是新字典：`code_unknown_lang` 是嵌套 dict，浅拷贝会串味，
+    统计断言会互相污染。"""
+    return B.empty_stats()
+
 
 # 渲染后不该出现的痕迹：标题/分隔线（代码内容被当成 Markdown 解析了）、
 # 字面围栏、以及没被换回去的占位符
 LEAK_RE = re.compile(r"<h[1-6][ >]|<hr\b|```|%%CHM-CODE-\d+%%")
+
+# 代码块既可以不高亮（`<pre><code>`），也可以带静态高亮（`<pre class="highlight">`），
+# 断言数量时统一走这个正则，别写死 `<pre><code`。
+PRE_BLOCK_RE = re.compile(r"<pre\b[^>]*>.*?</pre>", re.S)
+
+
+def code_blocks_of(html_text: str) -> list[str]:
+    """取出渲染结果里的代码块（顶层、列表项内、引用块内都适用）。"""
+    return PRE_BLOCK_RE.findall(html_text)
+
 
 CODE = """```toml
 [server]
@@ -53,7 +64,7 @@ def indent_lines(text: str, prefix: str) -> str:
 
 
 def render(md_text: str, keep_images: bool = False) -> str:
-    stats = dict(EMPTY_STATS)
+    stats = empty_stats()
     _meta, body, code_blocks = B.clean_markdown(md_text, keep_images, stats)
     return B.finalize_html(B.render_callouts(B.md_to_html(body, code_blocks)))
 
@@ -90,22 +101,25 @@ def cases() -> bool:
     # 1. 顶层围栏
     html = render(f"说明：\n\n{CODE}\n")
     ok &= check("顶层代码块", f"说明：\n\n{CODE}\n",
-                ("代码内容原样保留", CODE_TEXT in html),
+                ("代码内容原样保留", CODE_TEXT in B.rendered_code_text(html)),
                 ("无标题/围栏残留", not LEAK_RE.search(html)))
 
     # 2. 列表项内围栏（缩进 4 空格）—— 本次修复的主场景
     md = f"- 说明：\n\n{indent_lines(CODE, '    ')}\n"
     html = render(md)
     ok &= check("列表项内代码块", md,
-                ("在 <li> 里生成 <pre><code>", "<li>" in html and html.count("<pre><code") == 1),
-                ("代码没有被拆成段落", html.count("</li>") == 1 and CODE_TEXT in html),
+                ("在 <li> 里生成代码块",
+                 "<li>" in html and len(code_blocks_of(html)) == 1),
+                ("代码没有被拆成段落",
+                 html.count("</li>") == 1 and CODE_TEXT in B.rendered_code_text(html)),
                 ("注释没变成标题", not LEAK_RE.search(html)))
 
     # 3. 嵌套列表（缩进 8 空格）
     md = f"- 说明：\n\n    - 二级：\n\n{indent_lines(CODE, '        ')}\n"
     html = render(md)
     ok &= check("嵌套列表内代码块", md,
-                ("代码块在二级列表项里", html.count("<ul>") == 2 and html.count("<pre><code") == 1),
+                ("代码块在二级列表项里", html.count("<ul>") == 2
+                 and len(code_blocks_of(html)) == 1),
                 ("无残留", not LEAK_RE.search(html)))
 
     # 4. 引用块内围栏（每行带 "> " 前缀）
@@ -113,7 +127,7 @@ def cases() -> bool:
     html = render(md)
     ok &= check("引用块内代码块", md,
                 ("代码块留在 <blockquote> 内", html.count("<blockquote>") == 1
-                 and html.count("<pre><code") == 1),
+                 and len(code_blocks_of(html)) == 1),
                 ("引用块后的正文仍在块内", "结束语。" in html.split("</blockquote>")[0]),
                 ("无残留", not LEAK_RE.search(html)))
 
@@ -121,7 +135,9 @@ def cases() -> bool:
     md = f"- 说明：\n\n{indent_lines(CODE, '    > ')}\n"
     html = render(md)
     ok &= check("列表项内引用块里的代码块", md,
-                ("渲染为 <pre><code>", html.count("<pre><code") == 1 and CODE_TEXT in html),
+                ("渲染为代码块",
+                 len(code_blocks_of(html)) == 1
+                 and CODE_TEXT in B.rendered_code_text(html)),
                 ("无残留", not LEAK_RE.search(html)))
 
     # 6. 代码块后面还有列表项正文：不能被"挤出"列表
@@ -136,7 +152,7 @@ def cases() -> bool:
     md = f'<div label="TiKV">\n\n{CODE}\n</div>\n'
     html = render(md)
     ok &= check("div 容器内代码块", md,
-                ("渲染为 <pre><code>", html.count("<pre><code") == 1),
+                ("渲染为代码块", len(code_blocks_of(html)) == 1),
                 ("无残留", not LEAK_RE.search(html)))
 
     # 8. 代码里的 Markdown 语法保持原样
@@ -167,7 +183,7 @@ def cases() -> bool:
     ok &= check("网页模板标记清理", md,
                 ("copyable 已移除", "copyable" not in html),
                 ("页内 TOC 已移除", 'class="toc"' not in html and "[TOC]" not in html),
-                ("代码仍正常", "echo ok" in html))
+                ("代码仍正常", "echo ok" in B.rendered_code_text(html)))
 
     # 12. 宽表格需要滚动容器，不能撑出 CHM 正文区域。
     md = "| A | B |\n|---|---|\n| 1 | 2 |\n"
@@ -176,7 +192,7 @@ def cases() -> bool:
                 ("表格被容器包裹", '<div class="tablewrap"><table>' in html))
 
     # 13. 所有文章用短 ASCII 文件名，本地链接也必须指向相同映射。
-    stats = dict(EMPTY_STATS)
+    stats = empty_stats()
     _meta, linked, _blocks = B.clean_markdown(
         "[目标](/nested/目标.md#章节)", False, stats,
         included={"nested/目标.md"}, web_prefix="https://example.invalid/"
@@ -262,7 +278,7 @@ def cases() -> bool:
                  B.windows_search_tab_enabled(b"") is None))
 
     # 15. 图片版资源也使用短 ASCII 文件名，避免 CHM 内部路径兼容问题。
-    stats = dict(EMPTY_STATS)
+    stats = empty_stats()
     _meta, image_md, _blocks = B.clean_markdown("![架构图](/media/架构图.png)", True, stats)
     asset = B.local_asset_name("/media/架构图.png")
     ok &= check("短 ASCII 图片资源", "正文",
@@ -271,7 +287,7 @@ def cases() -> bool:
 
     # 15.1. 文档正文可能用 ``/*T![`` 描述 TiDB 注释语法。图片正则不能
     # 从这个未闭合的字面量跨行吞到后续普通链接，否则会生成不存在的 m*.html。
-    stats = {**EMPTY_STATS, "image_paths": [], "vars_unknown": {}}
+    stats = empty_stats()
     source = "语法为 `/*T![feature]`。\n\n详见 [Optimizer Hints](/optimizer-hints.md)。"
     _meta, linked, _blocks = B.clean_markdown(
         source, True, stats, included={"optimizer-hints.md"}
@@ -287,7 +303,7 @@ def cases() -> bool:
     remote = ("https://docs-download.pingcap.com/media/images/docs-cn/"
               "tiproxy/tiproxy-traffic-replay.png")
     source = f'<img src="{remote}" alt="TiProxy 流量回放" width="800" />'
-    stats = {**EMPTY_STATS, "image_paths": [], "vars_unknown": {}}
+    stats = empty_stats()
     _meta, localized, _blocks = B.clean_markdown(
         source, True, stats,
         available_files={"media/tiproxy/tiproxy-traffic-replay.png"}
@@ -300,7 +316,7 @@ def cases() -> bool:
                 ("不再依赖网络", "https://" not in localized))
 
     missing_source = source.replace("tiproxy-traffic-replay.png", "missing-v2.png")
-    stats = {**EMPTY_STATS, "image_paths": [], "vars_unknown": {}}
+    stats = empty_stats()
     _meta, omitted, _blocks = B.clean_markdown(
         missing_source, True, stats, available_files=set()
     )
@@ -325,7 +341,7 @@ def cases() -> bool:
                 ("尖括号参数保留", 'id="config-show--set-option-value--placement-rules"' in html))
 
     # 18. 仅把同版本官网链接本地化；跨版本链接必须继续指向原版本网页。
-    stats = dict(EMPTY_STATS)
+    stats = empty_stats()
     source = ("[当前](https://docs.pingcap.com/zh/tidb/v7.5/target/#章节) "
               "[旧版](https://docs.pingcap.com/zh/tidb/v7.4/target/#旧章节)")
     _meta, linked, _blocks = B.clean_markdown(
@@ -337,7 +353,7 @@ def cases() -> bool:
                 ("旧版本保持官网链接", "https://docs.pingcap.com/zh/tidb/v7.4/target/#旧章节" in linked))
 
     # 19. 少数上游链接意外重复写了 fragment，只保留第一个有效锚点。
-    stats = dict(EMPTY_STATS)
+    stats = empty_stats()
     _meta, linked, _blocks = B.clean_markdown(
         "[RU](/ru.md#什么是-request-unit-ru#什么是-request-unit-ru)", False, stats,
         included={"ru.md"}
@@ -665,6 +681,250 @@ def cases() -> bool:
                 ("无 Markdown 的标题不变",
                  B.page_title_from_meta({"title": "AUTO_INCREMENT"}, "x.md")
                  == "AUTO_INCREMENT"))
+
+    ok &= highlight_cases()
+    return ok
+
+
+# --------------------------------------------------------------------------
+# 构建期静态语法高亮（Pygments）
+#
+# CHM 的目标运行时是 Windows hh.exe（MSHTML），不跑脚本，所以高亮必须在构建
+# 阶段展开成静态 <span>。这里盯住三件事：
+#   1. 结构：<pre class="highlight"><code class="language-xxx">…</code></pre>；
+#   2. 内容：高亮前后的可见 code 文本逐字节完全一致（高亮只改 presentation）；
+#   3. 退化：unknown / 无语言 / text 一律回落到原来的纯文本块，构建不失败。
+# --------------------------------------------------------------------------
+
+# 高亮前后必须逐字节一致的样本：(语言, 原始代码)
+# 覆盖首尾空行、缩进、HTML 特殊字符、TiDB 专有 SQL 与 Hint。
+HIGHLIGHT_TEXT_SAMPLES = [
+    ("sql", "SELECT\n    TABLE_SCHEMA,\n    TABLE_NAME\n"
+            "FROM information_schema.tables\nWHERE TABLE_SCHEMA = 'test';"),
+    ("sql", "SELECT '<tag>', a < 10, b > 5\nFROM t\nWHERE x = 'a&b';"),
+    ("sql", "SELECT /*+ HASH_JOIN(t1, t2) */ *\nFROM t1\nJOIN t2 ON t1.id = t2.id;"),
+    ("sql", "ADMIN SHOW DDL JOBS;\nADMIN CHECK TABLE t;\n"
+            "SHOW STATS_HEALTHY;\nSHOW PLACEMENT;"),
+    ("mysql", "SHOW STATS_META;\nADMIN RECOVER INDEX t idx;"),
+    ("bash", "# 注释\nls -l | grep foo\n"),
+    ("shell", "echo ok"),
+    ("sh", "set -e\n\ntiup cluster list\n"),
+    ("toml", "[server]\n# 增大 gRPC 线程池\ngrpc-concurrency = 10\n"),
+    ("yaml", "server:\n  - a\n  - b\n"),
+    ("yml", "a: 1"),
+    ("json", '{\n  "a": 1,\n  "b": [1, 2]\n}\n'),
+    ("go", "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n"),
+    ("python", "def f(x):\n    return x + 1\n"),
+    # 首尾空行有意义：lexer 的 stripnl/ensurenl 默认会悄悄增删它们，必须原样保留
+    ("sql", "\n\nSELECT 1;\n\n"),
+    ("python", "\n"),
+]
+
+
+def code_span(pattern: str, html_text: str) -> bool:
+    """按 Pygments token 类前缀匹配 span（`k`/`kd`/`kn` 都算关键字）。"""
+    return re.search(rf'<span class="{pattern}[^"]*">', html_text) is not None
+
+
+def highlight_cases() -> bool:
+    print("  -- 静态语法高亮 --")
+    ok = True
+
+    # 1. SQL 是第一验收对象：关键字/字符串/数字/注释都要能区分
+    sql = ("SELECT\n    TABLE_SCHEMA,\n    INDEX_NAME\n"
+           "FROM information_schema.tidb_indexes\n"
+           "WHERE TABLE_SCHEMA = 'test'\n"
+           "  AND INDEX_NAME IS NOT NULL\n"
+           "  -- 只看有索引的表\n"
+           "ORDER BY TABLE_NAME;\n")
+    md = f"```sql\n{sql}```\n"
+    html = render(md)
+    block = html.split("<pre", 1)[-1]
+    ok &= check("SQL 代码块静态高亮", md,
+                ("外层是 <pre class=\"highlight\">", '<pre class="highlight">' in html),
+                ("保留 language-sql class", 'class="language-sql"' in html),
+                ("生成静态 span token", "<span" in html),
+                ("关键字 token", code_span("k", block)),
+                ("字符串 token", code_span("s", block)),
+                ("注释 token", code_span("c", block)),
+                ("标点/运算符 token", code_span("[op]", block)),
+                ("可见文本逐字节等于原码",
+                 B.rendered_code_text(code_blocks_of(html)[0]) == sql.rstrip("\n")),
+                ("没有残留占位符与围栏", not LEAK_RE.search(html)))
+
+    # 2. 数字与运算符：`id = 1` 这类最普通的条件也要着色
+    md = "```sql\nSELECT * FROM t WHERE id = 1;\n```\n"
+    html = render(md)
+    ok &= check("SQL 数字 token", md,
+                ("数字 token", code_span("m", html)),
+                ("SELECT 被当关键字",
+                 re.search(r'<span class="k[^"]*">SELECT</span>', html)),
+                ("换行没有被 span 吃掉", "</code></pre>" in html))
+
+    # 3. HTML 特殊字符必须完整可见（高亮不能丢内容、不能二次转义）
+    raw = "SELECT '<tag>', a < 10, b > 5\nFROM t\nWHERE x = 'a&b';"
+    md = f"```sql\n{raw}\n```\n"
+    html = render(md)
+    visible = B.rendered_code_text(code_blocks_of(html)[0])
+    ok &= check("高亮后的 HTML 特殊字符", md,
+                ("尖括号可见文本不变", visible == raw),
+                ("尖括号被转义", "&lt;tag&gt;" in html and "&amp;b" in html),
+                ("没有二次转义", "&amp;lt;" not in html))
+
+    # 4. 高亮前后文本一致：覆盖所有首版重点语言
+    for lang, raw in HIGHLIGHT_TEXT_SAMPLES:
+        stats = empty_stats()
+        out = B.highlight_code(raw, lang, stats)
+        ok &= check(f"高亮不改内容：{lang}（{raw.count(chr(10))} 换行）", "正文",
+                    (f"可见文本 == 原码（{raw!r}）", B.rendered_code_text(out) == raw),
+                    ("确实走的是高亮分支", stats["code_highlighted"] == 1),
+                    ("class 与语言一致",
+                     f'class="language-{B.normalize_code_language(lang)}"' in out))
+
+    # 5. 列表项内的 SQL：不能拆坏 <li>，高亮块仍留在列表里
+    md = ("- 说明：\n\n"
+          + indent_lines("```sql\nSELECT * FROM t WHERE id = 1;\n```", "    ")
+          + "\n\n- 下一项\n")
+    html = render(md)
+    ok &= check("列表内 SQL 高亮", md,
+                ("留在 <li> 里", html.count("<ul>") == 1
+                 and '<pre class="highlight">' in html.split("<li>")[1]),
+                ("列表结构没被拆坏",
+                 html.count("<li>") == 2 and html.count("</li>") == 2),
+                ("没有多余的 <p> 外壳", "<p><pre" not in html))
+
+    md = "- 说明：\n\n    ```sql\n    SELECT * FROM t WHERE id = 1;\n    ```\n"
+    html = render(md)
+    ok &= check("列表内缩进 SQL 高亮（4 空格）", md,
+                ("高亮块在 <li> 内", '<pre class="highlight">' in html.split("<li>")[1]),
+                ("没有 <p> 包 <pre>", "<p><pre" not in html),
+                ("无残留", not LEAK_RE.search(html)))
+
+    # 6. 引用块内的 SQL：<blockquote> 结构必须保留
+    md = "> 说明：\n>\n> ```sql\n> SELECT 1;\n> ```\n"
+    html = render(md)
+    ok &= check("引用块内 SQL 高亮", md,
+                ("仍在 <blockquote> 内",
+                 '<pre class="highlight">' in html.split("</blockquote>")[0]),
+                ("引用块结构保留", html.count("<blockquote>") == 1),
+                ("无残留", not LEAK_RE.search(html)))
+
+    # 7. 未知语言：不能使构建失败，退化为纯文本且转义正确
+    md = "```some-unknown-lang\nabc < def & ghi\n```\n"
+    html = render(md)
+    stats = empty_stats()
+    B.clean_markdown(md, False, stats)
+    ok &= check("未知语言 fallback", md,
+                ("退化为纯文本块",
+                 '<pre><code class="language-some-unknown-lang">' in html),
+                ("没有伪装成高亮", 'class="highlight"' not in html),
+                ("内容转义正确", "abc &lt; def &amp; ghi" in html),
+                ("统计记到未知语言里",
+                 stats["code_plain"] == 1
+                 and stats["code_unknown_lang"] == {"some-unknown-lang": 1}))
+
+    # 8. 无语言：保持纯文本，不加任何 class
+    md = "```\nabc < def\n```\n"
+    html = render(md)
+    ok &= check("无语言代码块保持纯文本", md,
+                ("没有 language class",
+                 "<pre><code>abc &lt; def</code></pre>" in html),
+                ("没有高亮", 'class="highlight"' not in html))
+
+    # 9. text / plain / console：内容里出现 SELECT 也不能猜成 SQL（不做自动语言检测）
+    for lang in ("text", "plain", "console"):
+        md = f"```{lang}\nSELECT FROM WHERE id = 1;\n```\n"
+        html = render(md)
+        normalized = B.normalize_code_language(lang)
+        ok &= check(f"{lang} 不高亮", md,
+                    ("仍是纯文本块", 'class="highlight"' not in html),
+                    ("保留归一化后的 class",
+                     f'class="language-{normalized}">SELECT FROM WHERE id = 1;' in html),
+                    ("没有 token span", "<span" not in html))
+
+    # 10. TiDB 专有 SQL 与 Hint：原文完整、Hint 不丢、Error token 不刺眼
+    tidb = ("ADMIN SHOW DDL JOBS;\nADMIN CHECK TABLE t;\nADMIN RECOVER INDEX t idx;\n"
+            "SHOW STATS_HEALTHY;\nSHOW STATS_META;\nSHOW PLACEMENT;\n")
+    md = f"```sql\n{tidb}```\n"
+    html = render(md)
+    ok &= check("TiDB 专有 SQL 高亮", md,
+                ("原文完整", B.rendered_code_text(code_blocks_of(html)[0])
+                 == tidb.rstrip("\n")),
+                ("ADMIN 被当关键字",
+                 re.search(r'<span class="k[^"]*">ADMIN</span>', html)))
+
+    hint = "SELECT /*+ HASH_JOIN(t1, t2) */ *\nFROM t1\nJOIN t2 ON t1.id = t2.id;"
+    md = f"```sql\n{hint}\n```\n"
+    html = render(md)
+    err_count = len(re.findall(r'<span class="err"', html))
+    ok &= check("TiDB Hint 原文完整", md,
+                ("HASH_JOIN 完整保留", "HASH_JOIN(t1, t2)" in html),
+                ("可见文本等于原码",
+                 B.rendered_code_text(code_blocks_of(html)[0]) == hint),
+                ("Hint 被识别为注释",
+                 re.search(r'<span class="c[^"]*">/\*\+ HASH_JOIN', html)),
+                # 验收标准不是"Pygments 完全懂 TiDB 方言"，而是 Error token 不刺眼：
+                # 只要 CSS 把它中性化，就算 lexer 判成 err 也不会毁掉阅读体验
+                ("CSS 把 .err 中性化",
+                 ".highlight .err{color:inherit;background:transparent}" in B.CSS),
+                ("CSS 没有给 .err 红底",
+                 not re.search(r"\.highlight \.err\{[^}]*#(?:f|e)", B.CSS)))
+    if err_count:
+        print(f"        （提示）该样例产生 {err_count} 个 Error token，"
+              "已由 .highlight .err 中性化")
+
+    # 11. 语言归一化与统计
+    stats = empty_stats()
+    for lang, code in [("sh", "echo 1"), ("shell", "echo 2"), ("yml", "a: 1"),
+                       ("txt", "plain"), ("console", "log"), ("", "无语言")]:
+        B.highlight_code(code, lang, stats)
+    ok &= check("语言归一化与高亮统计", "正文",
+                ("sh/shell -> bash",
+                 B.normalize_code_language("Sh") == "bash"
+                 and B.normalize_code_language("SHELL") == "bash"),
+                ("yml -> yaml", B.normalize_code_language("yml") == "yaml"),
+                ("txt/plaintext -> text",
+                 B.normalize_code_language("txt") == "text"
+                 and B.normalize_code_language("plaintext") == "text"),
+                ("console -> text", B.normalize_code_language("console") == "text"),
+                ("外来语言原样交给 Pygments",
+                 B.normalize_code_language("MySQL") == "mysql"
+                 and B.normalize_code_language("toml") == "toml"),
+                ("高亮 3 个（sh/shell/yml），纯文本 3 个",
+                 stats["code_highlighted"] == 3 and stats["code_plain"] == 3),
+                ("text/console/无语言都不算未知语言",
+                 stats["code_unknown_lang"] == {}))
+
+    # 12. 未安装 Pygments 时必须退化为纯文本（模拟构建机没装依赖）
+    saved = (B.HAS_PYGMENTS, B.pygments_highlight, B.get_lexer_by_name)
+    try:
+        B.HAS_PYGMENTS = False
+        stats = empty_stats()
+        out = B.highlight_code("SELECT 1;", "sql", stats)
+    finally:
+        (B.HAS_PYGMENTS, B.pygments_highlight, B.get_lexer_by_name) = saved
+    ok &= check("无 Pygments 时退化", "正文",
+                ("输出纯文本块",
+                 out == '<pre><code class="language-sql">SELECT 1;</code></pre>'),
+                ("计入纯文本统计", stats["code_plain"] == 1),
+                ("记到未高亮语言里", stats["code_unknown_lang"] == {"sql": 1}))
+
+    # 13. lexer 把内容改掉时也必须拒绝高亮（只信"可见文本 == 原码"）
+    saved = (B.HAS_PYGMENTS, B.get_lexer_by_name, B.pygments_highlight)
+    try:
+        B.HAS_PYGMENTS = True
+        B.get_lexer_by_name = lambda language, **opts: object()
+        B.pygments_highlight = lambda code, lexer, formatter: "X" + code
+        stats = empty_stats()
+        out = B.highlight_code("SELECT 1;", "sql", stats)
+    finally:
+        (B.HAS_PYGMENTS, B.get_lexer_by_name, B.pygments_highlight) = saved
+    ok &= check("lexer 改动内容时拒绝高亮", "正文",
+                ("退回纯文本", 'class="highlight"' not in out
+                 and out == '<pre><code class="language-sql">SELECT 1;</code></pre>'),
+                ("计入未高亮语言", stats["code_plain"] == 1
+                 and stats["code_unknown_lang"] == {"sql": 1}))
+
     return ok
 
 
@@ -675,10 +935,23 @@ def corpus() -> bool:
         print("[2/2] 跳过全量扫描（未找到 repos/docs-cn，先跑一次 ./build.sh 拉源码）")
         return True
     print("[2/2] 全量文档扫描")
-    pre_re = re.compile(r"<pre><code[^>]*>.*?</code></pre>", re.S)
+    # 高亮块的 <pre> 带 class，正则必须容忍属性，否则扫描会空转、什么都发现不了
+    pre_re = re.compile(r"<pre\b[^>]*>.*?</pre>", re.S)
     escaped_re = re.compile(r"</p>|</blockquote>|<h[1-6][ >]")
     broken: dict[str, int] = {}
     blocks = files = 0
+    highlighted = plain = 0
+    unknown: dict[str, int] = {}
+    text_changed: list[str] = []
+    real_highlight = B.highlight_code
+
+    def spy(raw_code, lang, stats=None):
+        """Capture (原码, 高亮结果) 用来核对"高亮不改内容"。"""
+        out = real_highlight(raw_code, lang, stats)
+        if B.rendered_code_text(out) != raw_code:
+            text_changed.append(f"{os.path.relpath(path, repo)}:{lang or '(none)'}")
+        return out
+
     for root, dirs, names in os.walk(repo):
         dirs[:] = [d for d in dirs if d not in (".git", "media")]
         for name in names:
@@ -688,10 +961,18 @@ def corpus() -> bool:
             with open(path, encoding="utf-8", errors="replace") as fh:
                 raw = fh.read()
             files += 1
-            stats = dict(EMPTY_STATS)
-            _meta, body, code_blocks = B.clean_markdown(raw, False, stats)
+            stats = empty_stats()
+            B.highlight_code = spy
+            try:
+                _meta, body, code_blocks = B.clean_markdown(raw, False, stats)
+            finally:
+                B.highlight_code = real_highlight
             html = B.finalize_html(B.render_callouts(B.md_to_html(body, code_blocks)))
             blocks += stats["code_blocks"]
+            highlighted += stats["code_highlighted"]
+            plain += stats["code_plain"]
+            for lang, count in stats["code_unknown_lang"].items():
+                unknown[lang] = unknown.get(lang, 0) + count
             bad = sum(1 for m in pre_re.finditer(html) if escaped_re.search(m.group(0)))
             bad += len(B.CODE_TOKEN_RE.findall(html)) + html.count("```")
             if bad:
@@ -700,7 +981,20 @@ def corpus() -> bool:
           f"渲染异常 {sum(broken.values())} 处")
     for path, count in sorted(broken.items(), key=lambda x: -x[1])[:10]:
         print(f"        {count:3d}  {path}")
-    return not broken
+    ok = not broken
+
+    ok &= check("全量文档：高亮不改内容", "正文",
+                (f"逐块核对 {blocks} 个代码块，可见文本全部等于原码"
+                 f"（不一致 {len(text_changed)} 个）", not text_changed))
+    for item in text_changed[:5]:
+        print(f"        内容被改动：{item}")
+    if blocks:
+        print(f"        语法高亮 {highlighted} 个（{highlighted * 100 // blocks}%），"
+              f"纯文本 {plain} 个")
+    if unknown:
+        top = sorted(unknown.items(), key=lambda kv: (-kv[1], kv[0]))
+        print("        未高亮语言：" + "、".join(f"{k}={v}" for k, v in top[:10]))
+    return ok
 
 
 def main() -> int:
