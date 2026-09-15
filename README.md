@@ -34,6 +34,7 @@ tidb-docs-chm/
 │   ├── verification.md      兼容性与版式问题的验收记录
 │   ├── windows-search.md    Windows"搜索"页签的说明与实机验收清单
 │   ├── windows-font-dpi.md  Windows 字号 / DPI 适配说明与实机测试矩阵
+│   ├── syntax-highlighting.md  代码块静态语法高亮的架构、fallback 与测试方法
 │   └── screenshots/         目录、编码、压缩和排版验收截图
 ├── repos/
 │   └── docs-cn/             官方文档仓库，由 build.sh 自动克隆或更新，不提交
@@ -58,6 +59,7 @@ tidb-docs-chm/
 `build.sh` 会自动创建 `.venv`，并按需要安装：
 
 - `markdown`：Markdown 转 HTML。
+- `pygments`：构建期静态代码语法高亮（只作用于构建，不进 CHM）。
 - `pillow`：含图片版的缩放、PNG 调色板量化和 JPEG 重编码。
 
 ### 2.2 可选工具
@@ -478,6 +480,8 @@ CHM 都没有），而同一个 CHM 在 `hh.exe` 里仍然正常打开——区�
 | `{{< copyable ... >}}` 等短代码 | 删除标记，保留其后的实际代码块 |
 | `<div label="macOS">`、`<details>` | 允许容器内 Markdown 正常渲染 |
 | 列表项内缩进的围栏代码 | 预处理成稳定的 `<pre><code>`，避免被解析为行内代码 |
+| 带语言的围栏代码块 | 构建期静态语法高亮：生成 `<pre class="highlight"><code class="language-sql">` 与静态 token `<span>`，CHM 里不跑任何脚本 |
+| 无语言 / `text` / 未知语言的围栏代码 | 保持纯文本块，不猜语言 |
 | 同版本且已收录的 `.md` 或官网链接 | 改为本地哈希 HTML，并保留有效锚点 |
 | 跨版本 TiDB 链接 | 保留原版本官网 URL，不错误映射到当前 CHM |
 | 未收录的 TiDB 页面 | 改为对应官网页面，避免留下无效本地链接 |
@@ -511,6 +515,42 @@ CHM 里有几处**不经过 Markdown 渲染**的纯文本出口，会把反引�
 处理标题内的方括号，否则 `ADMIN CHECK [TABLE|INDEX]` 这类条目会整条解析失败、
 页面随之从 CHM 里消失。
 
+### 10.2 代码语法高亮
+
+SQL / Shell / TOML / YAML / JSON / Go / Python 等 fenced code block 在 CHM 里是
+**构建期静态高亮**：
+
+```html
+<pre class="highlight"><code class="language-sql"><span class="k">SELECT</span> *
+<span class="k">FROM</span> t
+<span class="k">WHERE</span> id = <span class="mi">1</span>;
+</code></pre>
+```
+
+- 用 Python `Pygments` 在构建时把代码展开成静态 `<span>`，**CHM 里不含任何 JS**、
+  不引用 CDN、不加载高亮脚本：`hh.exe` 的 MSHTML 只做普通 CSS 渲染；
+- `HtmlFormatter(nowrap=True)` 只让 Pygments 产出内部 token，外层
+  `<pre class="highlight"><code class="language-xxx">` 仍由本项目生成，所以 `pre`
+  的字号、背景、边框、滚动条规则完全沿用原有版式；
+- 原有的 `convert_fences() → CODE_TOKEN → Markdown → restore_code_blocks()` 架构
+  不变，列表项、嵌套列表、引用块里的代码块照旧；
+- token 样式全部限定在 `.highlight` 作用域，浅色主题；`.err` 强制中性
+  （Pygments 默认红底，遇到 TiDB 扩展 SQL 会很刺眼）；
+- **只信 fenced language，不做自动语言检测**：无语言、`text`、`plain`、`console`
+  保持纯文本，代码里出现 `SELECT` 也不会被猜成 SQL；
+- alias 只有 `sh`/`shell → bash`、`yml → yaml`、`plaintext`/`txt`/`console → text`，
+  其余名字（含 `mysql`）原样交给 Pygments；未知语言安全回落纯文本，**不会让构建失败**；
+- 没装 Pygments 时（例如直接跑 `tools/build_chm.py`）同样回落纯文本，`build.sh`
+  会自动安装 `pygments`；
+- **高亮只改外观、不改内容**：关闭 lexer 的首尾换行归一化，并在展开后核对
+  "可见文本 == 原始代码"，不一致就放弃高亮。全量扫描会逐块校验这一点；
+- 构建日志会报告 `语法高亮 N 个 / 纯文本 M 个`，以及没能高亮的语言分布。
+
+静态高亮只是正文展示层的变化：不改页面 `<title>` 的 GBK 编码、不碰 Search 的
+`[WINDOWS]` 页签位、不改 `BuildFeatures`、不影响 `strip_inline_code()`，正文依旧是
+UTF-8 HTML + BOM。详细的失败链、语言表与测试方法见
+[`docs/syntax-highlighting.md`](docs/syntax-highlighting.md)。
+
 ## 11. 校验方法
 
 ### 11.1 渲染回归测试
@@ -529,9 +569,14 @@ make test
 测试覆盖列表、嵌套代码块、引用块、HTML 容器、模板清理、图片语法、官网链接、标题锚点、
 有序列表类型、目录形态开关、二进制目录判定、构建日期可复现、目录条目名去 Markdown
 定界符，以及 Windows CHM 二进制布局和启动目录、正文字号相对化与 Windows 导航字体。
+代码语法高亮另有一组用例：SQL token 区分、HTML 特殊字符、列表/引用内的 SQL、
+未知语言与无语言回落、TiDB 专有 SQL 与 Hint、语言别名与统计、无 Pygments 与
+"lexer 改动内容"两条退化路径；全量扫描还会逐块核对"高亮后的可见文本 == 原始代码"。
 `make test` 还会跑一遍 `test_chm_search.py`：它用真实的 `chmcmd`
 编译含 `TiKV`、`raftstore`、`TiFlash`、`learner` 的小样张，核对全文搜索库、
 `/#SYSTEM` 标志、窗口定义搜索页签位确实都已生成，且没有关键词索引；
+另用"同一份可见文本、一版带高亮 span、一版纯文本"的两份 CHM 断言
+`/$FIftiMain` 逐字节相同，证明静态高亮不会让代码内容从全文搜索里消失；
 没有安装 `chmcmd` 时该项自动跳过。
 
 ### 11.2 成品自检
@@ -590,6 +635,9 @@ chmls extractall dist/tidb-docs-7.5/tidb-docs-7.5.chm /tmp/tidb-chm
 ## 13. 已知限制
 
 - LZX 压缩依赖 Free Pascal `chmcmd`；未安装时只能生成未压缩 CHM。
+- 代码语法高亮依赖 Pygments 的 lexer：它不认的语言（如 `mermaid`、`ebnf+diagram`、
+  `dotenv`）保持纯文本块，构建日志会列出分布；TiDB 专有 SQL 由通用 SQL/MySQL lexer
+  着色，个别扩展语法可能被标成普通标识符，但原文与版式不受影响。
 - 外部网站内容不会被镜像，外链在无网络环境中无法访问。
 - 不生成关键词索引（`.hhk`），以保证目录干净和跨阅读器兼容性。
 - 全文搜索库由 `chmcmd` 生成，它的索引器不支持中日韩文字：Windows"搜索"页签可用，

@@ -77,7 +77,10 @@ DBCS 标志恒为 0，索引头里的代码页/语言 ID 恒为 cp1252/1033）�
 实测结论（`tools/test_chm_search.py` 每次都会复核）：
 
 - 索引里能查到 `TiDB`、`TiKV`、`TiFlash`、`raftstore`、`learner` 这类 ASCII 词；
-- 中文/日文一个词也进不了索引，因此**输入"执行计划""慢查询""备份恢复"不会有结果**。
+- 中文/日文一个词也进不了索引，因此**输入"执行计划""慢查询""备份恢复"不会有结果**；
+- **下划线实际也会切断单词**：`TIFLASH_REPLICA` 入索引的是 `tiflash` 与 `replica`
+  两个词，`aq_ws_ed_rf` 拆成 `aq` `ws` `ed` `rf`（`$FIftiMain` 词表实测）。
+  所以搜 `tidb_mem_quota_query` 这类变量名时，按整词搜不到，要搜其中一段。
 
 TiDB 文档的关键检索词有相当一部分是 ASCII（`region is unavailable`、
 `raftstore.store-pool-size`、`tidb_mem_quota_query`、`TiFlash learner`、

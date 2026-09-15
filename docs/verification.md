@@ -522,3 +522,69 @@ chmls extractall <chm> /tmp/x && grep -c '`' /tmp/x/toc.hhc   # 期望 0
 阈值是按"100% 缩放、2724px 宽窗口 → 正文区约 1900px"校准的；换屏幕或改系统缩放后
 可能要在 `ADAPTIVE_FONT_START_WIDTH` / `ADAPTIVE_FONT_STEP_WIDTH` /
 `ADAPTIVE_FONT_MAX_DELTA` 上微调（测试跟着常量走，不用改两份）。
+
+## 14. 2026-09-15：代码块没有语法高亮（构建期静态高亮）
+
+### 14.1 现象与成因
+
+SQL / Shell / TOML / YAML / JSON / Go / Python 代码块在 CHM 里全部同色。原因是
+`convert_fences()` 只把围栏语言写成 class：
+
+```html
+<pre><code class="language-sql">SELECT * FROM t WHERE id = 1;</code></pre>
+```
+
+`language-sql` 只是 class，Windows `hh.exe`（MSHTML）不会解析 SQL 再着色，构建链里
+也没有任何 tokenizer。
+
+### 14.2 本轮修改
+
+- 在 `tools/build_chm.py` 里引入 **Pygments（构建期静态高亮）**：新增 `highlight_code()`、
+  `normalize_code_language()`、`rendered_code_text()`，`convert_fences()` 只把
+  `code_blocks.append()` 那一行换成高亮版，仍是"占位符 → Markdown → 还原"这条老架构；
+- 输出结构固定为 `<pre class="highlight"><code class="language-xxx">` +
+  静态 `<span>` token（`HtmlFormatter(nowrap=True)`，外层标签由项目控制），
+  CHM 里不含 JS / CDN / 运行时高亮脚本；
+- `CSS` 里新增 `.highlight` 作用域的浅色 token 主题，`.err` 强制中性
+  （`color:inherit;background:transparent`），不改 `pre` 原有字号、背景、边框；
+- `BLOCK_IN_P_RE` 放宽到 `<pre\b[^>]*>`：高亮块是 `<pre class="highlight">`，
+  否则列表项里的高亮代码块会继续被 `<p>` 包着（HTML 非法）；
+- fallback 链：无 Pygments / 语言为空 / `text|plain|none` / `ClassNotFound` /
+  lexer 异常 / 高亮后可见文本与原码不一致 → 一律退回纯文本块，单个代码块绝不
+  影响整份 CHM；`build.sh` 自动安装 `pygments`；
+- 统计新增 `code_highlighted` / `code_plain` / `code_unknown_lang`，构建日志打印
+  高亮数量与没能高亮的语言分布；
+- 新增 `docs/syntax-highlighting.md`，README 增加"10.2 代码语法高亮"。
+
+**高亮只改外观、不改内容**：`get_lexer_by_name(..., stripnl=False, ensurenl=False)`
+关掉 lexer 的换行归一化，`HtmlFormatter` 补的那一个行终止符在原文不以换行结束时去掉，
+最后再逐块核对"剥标签 + 反转义后的可见文本 == 原始代码"。
+
+### 14.3 本机证据
+
+- `make test` 全绿：
+  - 渲染用例新增 16 组高亮检查（SQL 关键字/字符串/数字/注释/运算符 token、
+    HTML 特殊字符 `< > &`、列表项与引用块内的 SQL、未知语言 / 无语言 / `text` /
+    `plain` / `console` 回落、TiDB 专有 SQL 与 `HASH_JOIN` Hint、语言别名与统计、
+    模拟"未装 Pygments"和"lexer 改了内容"两条退化路径）；
+  - 全量扫描 `repos/docs-cn`：**1239 篇文档 / 8778 个代码块，渲染异常 0 处，
+    逐块核对"可见文本 == 原码"不一致 0 个**；高亮 6713 个（76%），纯文本 2065 个，
+    未高亮语言 9 类（`ebnf+diagram=163`、`dotenv=72`、`log=24`、
+    `railroad+diagram=15`、`mermaid=11`、`prisma=6`、`gradle=4`、`csv=3`、`haproxy=2`）；
+  - `test_chm_search.py`：同一份可见文本编译两版 CHM（一版带高亮 span、一版纯文本块），
+    两份 `/$FIftiMain` **逐字节相同**（5256 字节），代码块标记词 `chmcodeblockzz`
+    确实进了 FPC 词表 → span 没让代码内容从全文搜索里消失；
+  - 顺带确认 FPC 索引器把 `_` 也当分隔符：`TIFLASH_REPLICA` 入索引的是
+    `tiflash` / `replica` 两个词（`docs/windows-search.md` 里"`a-z0-9_` 都是词字符"
+    的表述对下划线并不成立）。
+- `./build.sh --no-images` 与 `./build.sh --images` 均成功，`verify_chm.py` 两项
+  自检全部通过；成品的 836 个页面里 661 页含高亮块（共 5400 个高亮块 / 1816 个
+  纯文本块），`style.css` 里 54 条 `.highlight` 规则都在，`.err` 规则为中性；
+- 纯文字版 4.0M、含图片版 32M，与改动前同一量级（静态 span 的体积开销可忽略）。
+
+### 14.4 仍未闭环（需要 Windows 实机）
+
+- 需要在 Windows `hh.exe` 里确认：SQL 关键字/字符串/数字/注释颜色可区分、
+  深浅主题下对比度可接受、`.err` 确实不刺眼；
+- 代码块 `pre` 的横向滚动条、行距在大字号档位下与改动前一致（本机只能核对 CSS
+  规则与 HTML 结构）。
