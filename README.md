@@ -157,7 +157,7 @@ git ls-remote --heads https://github.com/pingcap/docs-cn.git "release-*"
 | `--only-chm` | `--prune-chm` | 开启 | 对应 `--prune=chm`，只保留 CHM |
 | `--toc-mode=binary` | 可用空格传值 | `binary` | 写 `toc.hhc` 与 Windows 二进制目录（`hh.exe` 有目录页签） |
 | `--toc-mode=hhc` | 可用空格传值 | 无 | 只写 `toc.hhc`，Windows 侧无目录页签 |
-| `--body-font-size=N` | 可用空格传值 | `15` | 正文基准字号（px，12~24，固定值）；标题/代码/表格按 em 相对缩放 |
+| `--body-font-size=N` | 可用空格传值 | `17` | 正文基准字号（px，12~24，固定值）；标题/代码/表格按 em 相对缩放 |
 | `--nav-font-size=N` | 可用空格传值 | `10` | Windows 左侧 Contents/Search 导航字号（pt，8~14），写进 CHM 的 Default Font |
 | `--search=auto` | `--search auto` | `auto` | 有 `chmcmd` 时生成全文搜索库（`hh.exe` 有"搜索"页签），否则关闭并提示 |
 | `--search=fulltext` | `--search fulltext` | 无 | 强制生成全文搜索：必须用 `chmcmd`，否则构建失败，不会静默降级 |
@@ -276,7 +276,7 @@ dist/tidb-docs-7.5-images/tidb-docs-7.5-images.chm
 | `--prune MODE` | `none` | `none` 保留全部；`hhp` 保留 CHM/HHP/HHC；`chm` 仅保留 CHM |
 | `--compiler MODE` | `auto` | `auto`、`builtin` 或 `chmcmd`，详见第 8 节 |
 | `--search MODE` | `auto` | `auto`、`fulltext` 或 `none`：Windows"搜索"页签用的全文搜索，详见第 8.3 节 |
-| `--body-font-size N` | `15` | 正文基准字号（px，12~24，固定值）；其余字号是相对它的 `em`，详见第 9.3 节 |
+| `--body-font-size N` | `17` | 正文基准字号（px，12~24，固定值）；其余字号是相对它的 `em`，详见第 9.3 节 |
 | `--nav-font-size N` | `10` | Windows 导航窗格字号（pt，8~14）；写进 `.hhp` 的 `Default Font` 与 `/#SYSTEM` 记录 16 |
 | `--image-profile PROFILE` | `compact` | `original`、`compact` 或 `tiny`，详见第 7 节 |
 | `--image-max-width N` | 档位值 | 覆盖图片最大宽度；`0` 表示不缩放 |
@@ -437,7 +437,7 @@ CHM 都没有），而同一个 CHM 在 `hh.exe` 里仍然正常打开——区�
 
 | 区域 | 控制方式 | 参数 |
 | --- | --- | --- |
-| 正文 | `style.css`：`body` 固定基准字号 + 标题/代码/表格的 `em`，版心 1120px 居中 | `--body-font-size`（默认 15px，固定值） |
+| 正文 | `style.css`：`body` 固定基准字号 + 标题/代码/表格的 `em`，版心 1120px 居中 | `--body-font-size`（默认 17px，固定值） |
 | 左侧 Contents/Search 导航 | CHM 的 `Default Font`（`.hhp` 与 `/#SYSTEM` 记录 16） | `--nav-font-size`（默认 10pt） |
 
 左侧导航是 Windows 原生控件，CSS 管不到它，所以只能通过 `Default Font` 指定
@@ -447,7 +447,7 @@ CHM 都没有），而同一个 CHM 在 `hh.exe` 里仍然正常打开——区�
 
 正文是固定版式，不随窗口变化：大窗口下版心居中、两侧留白对称，窄窗口下
 自动流式占满、无横向滚动条。正文字号本身固定为 `--body-font-size`
-（默认 15px）。历史上的两版窗口自适应（分档改 `font-size`、分档改 `zoom`）
+（默认 17px）。历史上的两版窗口自适应（分档改 `font-size`、分档改 `zoom`）
 已移除：前者只放大文字、版式比例走样，后者会把两侧 `auto` 边距一起放大、
 导致右侧内容被裁、两侧留白不对称。`--adaptive-zoom` / `--no-adaptive-zoom` /
 `--adaptive-font` / `--no-adaptive-font` 保留为兼容参数，传入后忽略。

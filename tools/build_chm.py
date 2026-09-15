@@ -105,7 +105,7 @@ UTF8_BOM = b"\xef\xbb\xbf"
 # 右侧内容被裁且两侧留白不对称，现已全部移除，固定版式。
 # --------------------------------------------------------------------------
 
-DEFAULT_BODY_FONT_SIZE = 15
+DEFAULT_BODY_FONT_SIZE = 17
 DEFAULT_NAV_FONT_SIZE = 10
 BODY_FONT_SIZE_RANGE = (12, 24)
 NAV_FONT_SIZE_RANGE = (8, 14)

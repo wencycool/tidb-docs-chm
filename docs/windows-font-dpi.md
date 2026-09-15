@@ -6,7 +6,7 @@
 > 代码位置：`tools/build_chm.py`（`CSS`/`build_css()`、`RenderOptions`、
 > `default_chm_font()`、`build_hhp()`、`build_preview()`）、`tools/chmwriter.py`
 > （`system_default_font()`、`/#SYSTEM` 记录 16）。
-> 记录日期：2026-09-15（窗口自适应已移除，固定版式）。
+> 记录日期：2026-09-15（窗口自适应已移除，固定版式；默认正文 17px）。
 
 ## 1. 三条通路必须分开
 
@@ -24,7 +24,7 @@
   只能通过 CHM 的 `Default Font`（`.hhp` 的 `Default Font=`，落到 `/#SYSTEM`
   记录 16）指定"字体名,点数,字符集"。它只有一个固定 pt，**不可能随窗口缩放**。
 - **右侧正文**是 HTML 固定版式：`style.css` 的固定基准字号（`--body-font-size`，
-  默认 15px）加 em 相对字号，版心 1120px 居中，不随窗口变化，不使用 JS、
+  默认 17px）加 em 相对字号，版心 1120px 居中，不随窗口变化，不使用 JS、
   媒体查询、`zoom`、`vw`、`clamp()`，在各种文档模式下显示一致。
 - 历史上的两版窗口自适应已移除（见第 6 节）：分档改 `font-size` 只放大文字、
   版式比例走样；分档改 `body` 的 `zoom` 会把两侧 `auto` 边距一起放大，
@@ -34,23 +34,24 @@
 
 | 区域 | 旧值 | 现在 |
 | --- | --- | --- |
-| 正文基准 | 14px | **15px**（`--body-font-size`，固定值） |
+| 正文基准 | 14px | **17px**（`--body-font-size`，固定值） |
 | 正文行高 | 1.65 | **1.70** |
-| `h1` | 28px | **1.85em**（15px 下 ≈ 27.75px） |
-| `h2` | 21px | **1.45em**（≈ 21.75px） |
-| `h3` | 18px | **1.22em**（≈ 18.3px） |
-| `h4` | 16px | **1.08em**（≈ 16.2px） |
-| 行内 `code` | 13px | **.94em**（≈ 14.1px） |
-| `pre` | 13px | **.92em**（≈ 13.8px，行高 1.55） |
-| `table` | 13px | **.94em**（≈ 14.1px，行高 1.50） |
+| `h1` | 28px | **1.85em**（17px 下 ≈ 31.45px） |
+| `h2` | 21px | **1.45em**（≈ 24.65px） |
+| `h3` | 18px | **1.22em**（≈ 20.74px） |
+| `h4` | 16px | **1.08em**（≈ 18.36px） |
+| 行内 `code` | 13px | **.94em**（≈ 15.98px） |
+| `pre` | 13px | **.92em**（≈ 15.64px，行高 1.55） |
+| `table` | 13px | **.94em**（≈ 15.98px，行高 1.50） |
 | Windows 导航 | 系统默认 | **10pt**（`--nav-font-size`，不随窗口缩放） |
 | 预览页侧栏 | 13.5px 写死 | **10pt**（跟随 `--nav-font-size`） |
 
-正文是固定版式（`--body-font-size` 只定基准，默认 15px）：版心 1120px 居中，
+正文是固定版式（`--body-font-size` 只定基准，默认 17px）：版心 1120px 居中，
 大窗口下两侧留白对称，窄窗口下自动流式占满、无横向滚动条。
 
-正文基准仍是 15px（而不是直接 17~18px）：左侧目录还要占 280~340px，
-小窗口下 15px 在可读性与信息密度之间更平衡。
+正文基准取 17px（15px → 17px 约 +13%，温和提升可读性而非大比例缩放）：
+标题/代码/表格都是 `em`，自动等比跟随。左侧目录还要占 280~340px，
+小窗口下信息密度仍可接受。
 `hh.exe` 的视口宽度 = 窗口宽 − 左侧导航宽度。
 
 > 固定版式无阈值可校准：任何窗口下都是同一套 CSS。
@@ -58,7 +59,7 @@
 ## 3. 命令
 
 ```bash
-./build.sh                                  # 默认：正文 15px 固定版式 + 导航 10pt
+./build.sh                                  # 默认：正文 17px 固定版式 + 导航 10pt
 ./build.sh --body-font-size 16 --nav-font-size 11   # 正文基准/导航整体放大一档
 ./build.sh --body-font-size 12              # 需要更密的信息量时
 ```
@@ -72,7 +73,7 @@
 .venv/bin/python tools/build_chm.py \
   --repo repos/docs-cn --out dist/tidb-docs-cn --all --lang zh \
   --compiler chmcmd --search fulltext \
-  --body-font-size 15 --nav-font-size 10
+  --body-font-size 17 --nav-font-size 10
 ```
 
 允许范围：`--body-font-size` 为 12~24，`--nav-font-size` 为 8~14，超范围直接以
@@ -82,10 +83,10 @@
 
 | 位置 | 内容 |
 | --- | --- |
-| `style.css` | `body{font-size:15px}` 固定基准 + 全部相对字号，无任何媒体查询/zoom 分档 |
+| `style.css` | `body{font-size:17px}` 固定基准 + 全部相对字号，无任何媒体查询/zoom/scale 分档 |
 | `docs.hhp` / `docs.chmcmd.hhp` | `[OPTIONS]` 里 `Default Font=Microsoft YaHei,10,134` |
 | `/#SYSTEM` 记录 16 | `Default Font` 同一取值（chmcmd 原样透传，builtin 由 `ChmWriter` 写入） |
-| `preview.html` | 侧栏 `font-size:10pt`（与 Windows 语义对齐）；正文在 iframe 里，同样触发分档 |
+| `preview.html` | 侧栏 `font-size:10pt`（与 Windows 语义对齐）；正文在 iframe 里，同一样式 |
 
 中文构建用 `Microsoft YaHei,<pt>,134`（134 = GB2312/CP936），英文构建用
 `Segoe UI,<pt>,0`。构建日志会打印：
@@ -94,7 +95,7 @@
 [4/6] 生成直接打开兼容的 hhp / hhc
       Windows 二进制目录：启用
       Windows 全文搜索：启用（由 chmcmd 生成）
-      正文版式：固定版式（基准 15px，版心 1120px 居中，不随窗口变化）
+      正文版式：固定版式（基准 17px，版心 1120px 居中，不随窗口变化）
       Windows 导航字体：Microsoft YaHei,10,134
 ```
 
@@ -102,7 +103,7 @@
 
 | Windows | DPI | 分辨率 | 窗口 | 重点 |
 | --- | ---: | --- | --- | --- |
-| Windows 10 | 100% | 1920×1080 | 默认尺寸 | 基准 15px，版心居中 |
+| Windows 10 | 100% | 1920×1080 | 默认尺寸 | 基准 17px，版心居中 |
 | Windows 10 | 125% | 1920×1080 | 默认尺寸 | 常见办公环境 |
 | Windows 11 | 125% | 1920×1080 | 最大化 | 版心居中、两侧对称 |
 | Windows 11 | 150% | 2560×1440 | 最大化 | 高 DPI 下版式不变 |
@@ -138,17 +139,17 @@
 ❌ 只改 preview.html 或只改 builtin 一条后端
 ❌ 给 toc.hhc 加 CSS 企图控制 Windows 导航树
 ❌ 修改 Windows 注册表的全局 hh.exe 字号
-❌ 默认把正文直接提到 17~18px（固定 15px 兼顾密度与可读性，不够用时用 --body-font-size 调）
+❌ 默认把正文直接提到 24px（用 17px 温和提升，不够用时用 --body-font-size 调）
 ```
 
 ## 7. 本机证据与仍未闭环
 
 本机（macOS + FPC 3.2.2 + Python builtin writer）已核对：
 
-- `build_css(15)` 输出 `font-size:15px` 固定基准，标题/代码/表格全部为 `em`，
+- `build_css()` 输出 `font-size:17px` 固定基准，标题/代码/表格全部为 `em`，
   不再出现写死的标题 px 字号，也没有 `clamp`/`vw`；
-- `build_css(15)` 与 `build_css(15, adaptive=False)` 输出一致，均不含任何
-  `@media` 与 `zoom:`，废弃的四个自适应函数一律返回空；
+- `build_css()` 与 `build_css(15, adaptive=False)` 均不含任何 `@media`、
+  `zoom:`、`transform`，废弃的四个自适应函数一律返回空；
 - 预览页正文走 iframe + 同一份 `style.css`；
 - `build_hhp()` 在 `[OPTIONS]` 写出 `Default Font=Microsoft YaHei,10,134`，
   且不改动 `[WINDOWS]` / Search 页签位（两者正交）；

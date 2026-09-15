@@ -666,3 +666,36 @@ Windows `hh.exe` 实机截图：大窗口下正文右侧被裁掉约半个字、
 ### 16.4 仍未闭环
 
 - 需 Windows 实机确认：大/小窗口下版心居中对称、无右侧裁剪、无横向滚动条。
+
+## 17. 2026-09-15：默认正文 15px → 17px，并加固固定版式防回归
+
+### 17.1 背景
+
+实机截图对比显示旧产物流正文整体视觉偏小（与参照约 0.5 倍差，属整体
+HTML 缩放异常而非单纯字号问题），固定版式（第 16 节）解决缩放异常后，
+15px 基准在 Windows 上仍略小。按内容比例改造方案执行：版式保持固定，
+只把默认基准从 15px 温和提高到 17px（+13.3%），导航保持 10pt、
+版心保持 1120px。
+
+### 17.2 本轮修改
+
+- `DEFAULT_BODY_FONT_SIZE = 15` → `17`（`--body-font-size` 仍可在 12~24
+  范围覆盖；`DEFAULT_NAV_FONT_SIZE` 保持 10）；
+- `verify_chm.py` 固定版式黑名单补强：`zoom:`、`transform:scale(`、
+  `-ms-transform`、 `@media` 块内改 `body` 字号，命中即失败并明示
+  "CHM 固定版式禁止正文整体 zoom/scale"；
+- `test_render.py` 新增：默认基准 17px 断言、无 `zoom` / `transform` 缩放 /
+  `-ms-transform` 断言，保留版心 1120px 与 em 相对字号断言；
+- `build.sh`、`README.md`、`docs/windows-font-dpi.md` 的默认 15px 描述
+  全部更新为 17px（含 em 换算值）；不新增任何 `--scale/--zoom` 类参数。
+
+### 17.3 本机证据
+
+- `make test` 全绿；小规模构建 `style.css` 含 `body{font-size:17px}`、
+  版心 1120px，无 `zoom` / `transform` / `@media`，`verify_chm.py` 通过。
+
+### 17.4 仍未闭环（需要 Windows 实机）
+
+- 按验收矩阵确认：1920×1080（100%/125%）、2560×1440（100%/125%）最大化，
+  正文大小合适、无裁剪、无横向滚动、两侧对称；如仍偏小/偏大，
+  用 `--body-font-size 16/18` 校准后再定默认。

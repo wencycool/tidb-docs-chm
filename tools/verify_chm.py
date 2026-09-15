@@ -320,10 +320,24 @@ def main() -> int:
         base = re.search(r"body\{[^}]*font-size:([0-9.]+)px", css_text)
         print("正文字号  : " + (f"{base.group(1)}px固定（标题/代码/表格按 em 相对缩放）"
                                 if base else "未在 style.css 中声明"))
-        stale = re.findall(r"@media\s*\(min-width:", css_text)
-        if stale or "zoom:" in css_text:
-            print(f"  [失败] 残留窗口自适应样式（@media {len(stale)} 处"
-                  f"{'、含 zoom' if 'zoom:' in css_text else ''}），应为固定版式")
+        # 固定版式防回归黑名单：正文整体缩放在不同 Windows 环境行为不可控
+        # （裁剪/偏移/留白不对称），一旦进 style.css 必须失败。
+        lower = css_text.lower()
+        nospace = re.sub(r"\s+", "", lower)
+        scale_hits = []
+        if "zoom:" in lower:
+            scale_hits.append("zoom:")
+        if "transform:scale(" in nospace:
+            scale_hits.append("transform:scale(")
+        if "-ms-transform" in lower:
+            scale_hits.append("-ms-transform")
+        for m in re.finditer(r"@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}", css_text, re.S):
+            if re.search(r"body\s*\{[^}]*font-size\s*:", m.group(0)):
+                scale_hits.append("@media body font-size")
+                break
+        if scale_hits:
+            print("  [失败] CHM 固定版式禁止正文整体 zoom/scale，检出："
+                  + "、".join(scale_hits))
             ok = False
         else:
             fixed = ".page{max-width:1120px;margin:0auto" in css_text.replace(" ", "")

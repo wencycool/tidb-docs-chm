@@ -510,16 +510,22 @@ def cases() -> bool:
                  "font-size:clamp(" not in css15
                  and re.search(r"font-size:[^;]*[0-9]vw", css15) is None))
 
-    # 26b. 正文固定版式：无任何媒体查询 / zoom / font-size 分档，不随窗口变化；
+    # 26b. 正文固定版式：无任何媒体查询 / zoom / scale 分档，不随窗口变化；
     #      版心 1120px 居中，大窗口两侧留白对称，窄窗口流式占满。
+    css_default = B.build_css()
     css_no = B.build_css(15, adaptive=False)
     ok &= check("正文固定版式（无自适应）", "正文",
-                ("默认无任何媒体查询", "@media" not in css15),
-                ("无 zoom 分档", "zoom:" not in css15),
+                ("默认基准 17px", B.DEFAULT_BODY_FONT_SIZE == 17
+                 and "font-size:17px" in css_default),
+                ("默认无任何媒体查询", "@media" not in css_default),
+                ("无 zoom", "zoom:" not in css_default.lower()),
+                ("无 transform 缩放",
+                 "transform:scale(" not in re.sub(r"\s+", "", css_default.lower())),
+                ("无 -ms-transform", "-ms-transform" not in css_default.lower()),
                 ("无 font-size 分档",
-                 not re.search(r"@media[^{]*\{body\{font-size:", css15)),
+                 not re.search(r"@media[^{]*\{body\{font-size:", css_default)),
                 ("版心固定 1120px 居中",
-                 ".page{max-width:1120px;margin:0 auto" in css15),
+                 ".page{max-width:1120px;margin:0 auto" in css_default),
                 ("关闭参数同样固定",
                  "@media" not in css_no and "zoom:" not in css_no),
                 ("基准字号仍随参数变化",

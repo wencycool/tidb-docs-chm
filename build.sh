@@ -21,7 +21,7 @@
 # Windows"搜索"页签需要全文搜索库（chmcmd 生成）+ 窗口定义里的搜索页签位：
 # --search auto（默认）在 chmcmd 可用时开启，否则关闭并打印提示；
 # --search fulltext 是强约束，缺 chmcmd 直接失败，不会静默退化成没有搜索。
-# 正文固定版式：style.css 基准字号（px，默认 15）+ em 相对字号，版心 1120px 居中，
+# 正文固定版式：style.css 基准字号（px，默认 17）+ em 相对字号，版心 1120px 居中，
 # 不随窗口变化（窗口自适应已移除：--adaptive-zoom / --no-adaptive-zoom /
 # --adaptive-font / --no-adaptive-font 保留为兼容参数，传入后忽略）；
 # 导航是 Windows 原生控件，只能由 CHM 的 Default Font 给固定 pt，不随窗口缩放。
