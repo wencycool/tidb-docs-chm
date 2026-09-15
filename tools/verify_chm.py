@@ -17,6 +17,7 @@ verify_chm.py —— 检查 CHM 的直接打开、离线资源、目录与版式
   9. ITSF 是否按 Section 0、ITSP 目录、正文的 Windows 标准顺序写入
  10. Windows"搜索"页签所需的全文搜索结构是否与构建意图一致
  11. 正文基准字号（``style.css``）与 Windows 导航字体（``/#SYSTEM`` 记录 16）
+ 12. 页面 ``<title>`` 的编码（应由 CHM 的 ANSI 代码页承载，否则搜索结果乱码）
 
 用法：
     python3 tools/verify_chm.py dist/tidb-docs-cn/tidb-docs-cn.chm
@@ -321,6 +322,33 @@ def main() -> int:
                                 if base else "未在 style.css 中声明"))
 
     html_files = [n for n in names if n.endswith(".html")]
+    if (root or readable) and html_files:
+        # 搜索结果标题的编码：chmcmd 会把页面 <title> 的原始字节抄进
+        # #TOPICS/#STRINGS，hh.exe 按系统 ANSI（中文 = GBK）显示；
+        # 标题若是 UTF-8 字节，搜索结果列表就会整列乱码。
+        not_utf8 = valid_utf8 = 0
+        for name in html_files[:40]:
+            try:
+                raw = read_bytes(name)
+            except (KeyError, OSError):
+                continue
+            m = re.search(rb"<title[^>]*>(.*?)</title>", raw, re.S | re.I)
+            if not m or not any(b > 127 for b in m.group(1)):
+                continue
+            try:
+                m.group(1).decode("utf-8")
+                valid_utf8 += 1
+            except UnicodeDecodeError:
+                not_utf8 += 1
+        if not_utf8 or valid_utf8:
+            print(f"搜索标题  : 抽样 {not_utf8 + valid_utf8} 个非 ASCII 标题，"
+                  f"非 UTF-8 字节 {not_utf8} 个、合法 UTF-8 字节 {valid_utf8} 个")
+            if valid_utf8:
+                print("  [提示] 合法 UTF-8 的标题有两种可能：标题本就是 UTF-8 字节"
+                      "（hh.exe 按 ANSI 显示 → 搜索结果乱码），或 GBK 字节恰好也是"
+                      "合法 UTF-8（显示正常）。构建侧由 build_chm.py 与期望值"
+                      "逐字节比对，不依赖这个抽样。")
+
     if root or readable:
         bom = [n for n in html_files if read_bytes(n).startswith(UTF8_BOM)]
         print(f"正文编码  : {len(bom)}/{len(html_files)} 个 HTML 带 UTF-8 BOM"

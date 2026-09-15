@@ -395,11 +395,17 @@ hhc.exe docs.hhp
 | CHM 内容 | 编码 | 原因 |
 | --- | --- | --- |
 | 正文 HTML | UTF-8 + BOM + `<meta charset>` | `hh.exe` 和第三方阅读器可直接判定 UTF-8 |
+| 页面 `<title>` | GBK（CHM 的 ANSI 代码页） | `chmcmd` 把 `<title>` 的原始字节直接抄进 `#TOPICS`/`#STRINGS`，而 `hh.exe` 的"搜索结果"列表按系统 ANSI 显示这些字符串；标题若是 UTF-8 字节就会整列乱码 |
 | `style.css` | UTF-8 + BOM | 与正文一致，避免非 ASCII 内容误判 |
 | `toc.hhc` | GBK | 简体中文 Windows 的 HTML Help 按 ANSI 读取 |
-| `/#STRINGS` | GBK | Windows 二进制目录标题按活动代码页读取 |
-| `/#SYSTEM` | GBK | 书名、默认页和目录名按活动代码页读取 |
+| `/#STRINGS` | GBK | 目录树标题、搜索结果标题都按活动代码页读取 |
+| `/#SYSTEM` | GBK | 书名、默认页、目录名与导航字体按活动代码页读取 |
 | `docs.hhp` | GBK | Windows `hhc.exe` 按 ANSI 读取工程文件 |
+
+页面正文仍是 UTF-8 + BOM，只有 `<title>` 按 ANSI 写：两者用途不同——正文由
+MSHTML 按 BOM/meta 解码，标题只是给 CHM 的 ANSI 字符串表用（页面里不显示）。
+构建结束时 `build_chm.py` 会逐页把 `<title>` 与期望的 ANSI 字节逐字节比对，
+不一致直接失败。
 
 关闭 UTF-8 BOM 可能导致中文正文在默认编码下乱码，除非有明确测试需求，否则不要使用
 `--no-utf8-bom`。

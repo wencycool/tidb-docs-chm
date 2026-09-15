@@ -45,12 +45,16 @@ PAGES = {
     "tiflash.html": "<h1>TiFlash</h1><p>TiFlash learner replica analytical query</p>",
 }
 
-# 唯一的标记词：FIFTI 词表按"与上一个词共享的前缀长度 + 余下字符"压缩存储，
-# 普通词的子串探测不一定可靠，所以用一个不可能与别的词共享前缀的标记词断言
-# "正文确实被索引了"。
+# 正文里的唯一标记词，用来断言"页面正文确实进了索引"。
 MARKER = "chmsearchprobezz"
-# 样张里的常见词，只作为观察输出（前缀压缩会让子串探测偶有漏检）。
+# 样张里的常见词，只作为观察输出。
 TOKENS = ("raftstore", "learner", "tiflash", "tikv")
+
+
+def indexed(index: bytes, token: str) -> bool:
+    """FIFTI 词表按"与上一个词共享的前缀长度 + 余下字符"压缩存储，
+    词首字符可能不单独出现，因此按词尾探测。"""
+    return token[-6:].encode() in index
 
 
 def check(name: str, *conditions: tuple[str, bool]) -> bool:
@@ -61,11 +65,22 @@ def check(name: str, *conditions: tuple[str, bool]) -> bool:
     return not failed
 
 
+# 中文标题：CHM 的主题表（搜索结果标题）由 chmcmd 从 <title> 原样抄字节，
+# hh.exe 按系统 ANSI(GBK) 显示，所以标题必须按 ANSI 写，否则搜索结果是乱码。
+PAGE_TITLES = {
+    "index.html": "TiDB 文档首页",
+    "tikv.html": "TiKV 分布式存储",
+    "tiflash.html": "TiFlash 列存副本",
+}
+
+
 def write_sample(root: str) -> None:
     for name, body in PAGES.items():
-        with open(os.path.join(root, name), "w", encoding="utf-8") as fh:
-            fh.write(f'<!DOCTYPE html><html><head><meta charset="utf-8">'
-                     f"<title>{name}</title></head><body>{body}</body></html>")
+        title = PAGE_TITLES[name]
+        page = B.page_bytes(
+            B.wrap_page(title, body, lang="zh", chm_title=True), title, "zh")
+        with open(os.path.join(root, name), "wb") as fh:
+            fh.write(page)
     entries = [
         B.TocEntry("首页", "index.html"),
         B.TocEntry("TiKV", "tikv.html"),
@@ -134,11 +149,16 @@ def main() -> int:
                     ("没有关键词索引 .hhk",
                      detect_keyword_index_entries(reader.files) == []))
 
+        strings = read_stream(chm, root, "/#STRINGS", reader)
+        title = PAGE_TITLES["tiflash.html"]
+        ok &= check("搜索结果标题按 ANSI 存储",
+                    ("#TOPICS/#STRINGS 是 GBK 字节", title.encode("gbk") in strings),
+                    ("不是 UTF-8 字节", title.encode("utf-8") not in strings))
+
         index = read_stream(chm, root, "/$FIftiMain", reader)
-        hit = [t for t in TOKENS
-               if any(p in index for p in (t.encode(), t[1:].encode()))]
+        hit = [t for t in TOKENS if indexed(index, t)]
         ok &= check("索引收录正文词",
-                    (f"标记词 {MARKER} 已索引", MARKER.encode() in index))
+                    (f"标记词 {MARKER} 已索引", indexed(index, MARKER)))
         print(f"        索引 {len(index)} 字节；样张词命中 {len(hit)}/{len(TOKENS)}"
               f"（{', '.join(hit) or '无'}）")
         print("        注意：chmcmd 的索引器只认 ASCII a-z0-9_，"

@@ -354,3 +354,54 @@ chmls extractall dist/tidb-docs-cn/tidb-docs-cn.chm /tmp/c
 - `Microsoft YaHei` 未安装时 Windows 的回退表现；
 - `Default Font` 第三段（字符集 134/0）在不同 HTML Help 编译器里的差异——
   本阶段硬目标是"字体名 + 点数"生效。
+
+## 11. 2026-09-15：搜索结果标题乱码（CHM 字符串表编码）
+
+### 11.1 现象与成因
+
+现象：Windows `hh.exe` 里"搜索"页签已经能用，但结果列表的主题标题整列乱码，
+点开正文却完全正常。
+
+成因是 CHM 内部字符串表（`#TOPICS` + `#STRINGS`）的编码不一致：
+
+- `hh.exe` 的搜索结果标题来自这张表，按**系统 ANSI**（简体中文 = GBK）显示；
+- `chmcmd` 把页面 `<title>` 的**原始字节原样**抄进这张表
+  （`htmlindexer.pas`：`if IsTitle then FDocTitle := Words;`，不做任何字符集转换）；
+- 本项目的正文页面是 UTF-8 + BOM，于是标题以 UTF-8 字节进表 →
+  同一张 GBK 表里混进 UTF-8 字节 → 乱码；
+- 目录树的名字来自 GBK 的 `toc.hhc`，所以"目录正常、搜索乱码"，
+  这也正是用户看到的现象。
+
+本机解包实测（同一份内容，`chmls extractall` 后看 `#STRINGS` 字节）：
+
+| 产物 | `#STRINGS` 里"执行计划"的字节 | 解码 |
+| --- | --- | --- |
+| 修复前 | `\xe6\x89\xa7\xe8\xa1\x8c\xe8\xae\xa1\xe5\x88\x92` | UTF-8 → 乱码 |
+| 修复后 | `\xd6\xb4\xd0\xd0\xbc\xc6\xbb\xae` | GBK → 正常 |
+
+参照：微软 `hhc.exe` 产物里 GaussDB 产品文档的 `#STRINGS` 是 ANSI(GBK) 字节；
+TiDB 官方 7.5 CHM 的 `#STRINGS` 是 UTF-8 字节（其页面也是 UTF-8 无 BOM）。
+本项目面向中文 Windows 的 `hh.exe`，按 ANSI 写入是可以验证的正确形态。
+
+### 11.2 本轮修改
+
+- `wrap_page(..., chm_title=True)` 把 `<title>` 写成占位符，
+  `page_bytes()` 按 `CHM_TITLE_ENCODINGS`（zh → GBK、en → cp1252）填入标题字节；
+  正文仍是 UTF-8 + BOM，`preview.html`（不进 CHM）保持 UTF-8 标题。
+- 构建结束时逐页比较 `<title>` 与 `title.encode(编码, "replace")`，不一致直接
+  失败。**不能用"是不是合法 UTF-8"做判据**：GBK 字节有时恰好也是合法 UTF-8
+  （实测 "SQL 模式" 的 GBK 字节 `\xc4\xa3\xca\xbd` 就是合法 UTF-8），
+  一开始用启发式的实现因此误判过一个页面。
+- `verify_chm.py` 抽样报告 `<title>` 编码（非 UTF-8 / 合法 UTF-8 各多少个），
+  并说明"合法 UTF-8"既可能是真 UTF-8（会乱码）也可能是 GBK 巧合，判定以构建侧
+  的逐字节比对为准。
+- 测试：`test_render.py` 覆盖 GBK 标题字节、正文仍 UTF-8、占位符不残留、
+  英文用 cp1252、预览页保持 UTF-8，以及"GBK 碰巧合法 UTF-8 时仍判为一致"；
+  `test_chm_search.py` 端到端断言 `#STRINGS` 里是 GBK 标题字节、不是 UTF-8 字节。
+- 文档：README 第 9.1 节编码表新增"页面 `<title>`"一行，
+  `docs/windows-search.md` 增加第 3.1 节常见问题。
+
+### 11.3 仍未闭环
+
+Windows 实机确认搜索结果列表标题显示正常（本机只能证明字节层面与
+"hh.exe 按 ANSI 读"一致；目录树用的是同一套 GBK 字节且一直正常显示）。

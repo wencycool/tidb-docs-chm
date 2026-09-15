@@ -549,6 +549,42 @@ def cases() -> bool:
     ok &= check("preview 侧栏用 pt", "正文",
                 ("10pt", "font-size:10pt" in B.build_preview("T", [], 0, "t.chm", 10)),
                 ("12pt", "font-size:12pt" in B.build_preview("T", [], 0, "t.chm", 12)))
+
+    # 29. 页面 <title> 必须按 CHM 的 ANSI 代码页写：chmcmd 会把 <title> 的
+    #     原始字节直接抄进 #TOPICS/#STRINGS，hh.exe 按系统 ANSI 显示这些字符串，
+    #     UTF-8 标题会让"搜索结果"整列乱码；正文仍是 UTF-8（+BOM）。
+    zh_title = "执行计划概览"
+    page_zh = B.page_bytes(
+        B.wrap_page(zh_title, "<p>正文</p>", lang="zh", chm_title=True),
+        zh_title, "zh")
+    page_en = B.page_bytes(
+        B.wrap_page("Execution Plan", "<p>body</p>", lang="en", chm_title=True),
+        "Execution Plan", "en")
+    plain = B.wrap_page(zh_title, "<p>正文</p>", lang="zh")
+    ok &= check("页面标题按 ANSI 写", "正文",
+                ("中文标题是 GBK 字节",
+                 zh_title.encode("gbk") in page_zh
+                 and zh_title.encode("utf-8") not in page_zh),
+                ("正文仍是 UTF-8", "正文".encode("utf-8") in page_zh),
+                ("占位符不会残留", B.PAGE_TITLE_TOKEN.encode() not in page_zh),
+                ("英文构建用 cp1252", b"<title>Execution Plan</title>" in page_en),
+                ("预览页保持 UTF-8 标题",
+                 zh_title.encode("utf-8") in plain.encode("utf-8")))
+
+    ok &= check("标题字节与期望一致", "正文",
+                ("GBK 标题逐字节相等",
+                 B.page_title_bytes(page_zh) == zh_title.encode("gbk")),
+                ("UTF-8 标题会被判为不一致",
+                 B.page_title_bytes(plain.encode("utf-8")) != zh_title.encode("gbk")),
+                ("纯 ASCII 标题不受影响",
+                 B.page_title_bytes(page_en) == b"Execution Plan"),
+                # "SQL 模式" 的 GBK 字节恰好也是合法 UTF-8：只能逐字节比对，
+                # 不能用"是不是合法 UTF-8"当判据
+                ("GBK 碰巧合法 UTF-8 时仍判为一致",
+                 B.page_title_bytes(
+                     B.page_bytes(B.wrap_page("SQL 模式", "x", lang="zh",
+                                              chm_title=True), "SQL 模式", "zh"))
+                 == "SQL 模式".encode("gbk")))
     return ok
 
 

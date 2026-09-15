@@ -98,6 +98,32 @@ hhc.exe docs.hhp
 `hhc.exe` 会重新生成 `docs.hhp`/`toc.hhc` 声明的全部内容，包括它自己的全文索引
 （支持中日韩）与 `/#IDXHDR` 等微软产物专有结构。
 
+## 3.1 常见问题：搜索有结果，但主题标题是乱码
+
+症状：Search 页签能出结果，点开正文也正常，只有结果列表里的主题标题是乱码。
+
+原因：`hh.exe` 的搜索结果列表读的是 CHM 的主题表（`#TOPICS` + `#STRINGS`），
+而 `chmcmd` 会把页面 `<title>` 的**原始字节原样**抄进这张表
+（`htmlindexer.pas`：`if IsTitle then FDocTitle := Words;`），
+`hh.exe` 再按系统 ANSI（简体中文 = GBK）显示。页面正文是 UTF-8 + BOM，
+如果标题也按 UTF-8 写，这张 ANSI 表里就混进了 UTF-8 字节 → 整列乱码；
+而目录树的名字来自 GBK 的 `toc.hhc`，所以目录始终正常。
+
+修复：`<title>` 单独按 CHM 的 ANSI 代码页写（中文 GBK、英文 cp1252），
+正文仍是 UTF-8 + BOM。构建结束时会逐页比对 `<title>` 与期望的 ANSI 字节，
+不一致直接失败；`verify_chm.py` 也会抽样报告标题编码。
+
+本机实测（同一份内容）：
+
+| 产物 | `#STRINGS` 里的标题字节 | hh.exe 显示 |
+| --- | --- | --- |
+| 旧实现（标题 UTF-8） | `æ§è¡...`（UTF-8） | 乱码 |
+| 现在（标题 GBK） | `Ö´ÐÐ...`（GBK） | 正常 |
+
+注意不能用"是不是合法 UTF-8"来判断：GBK 字节有时恰好也是合法 UTF-8
+（例如"SQL 模式"的 GBK 字节 `\xc4\xa3\xca\xbd`），所以校验必须与期望值
+逐字节比对。
+
 ## 4. Windows 实机验收清单
 
 ```text
@@ -109,6 +135,7 @@ hhc.exe docs.hhp
 [ ] 搜索 TiKV 有结果
 [ ] 搜索 raftstore 有结果
 [ ] 搜索 tiDB（大小写混合）有结果
+[ ] 搜索结果列表里的主题标题是中文而不是乱码
 [ ] 搜索"执行计划"：记录实际行为（预期 chmcmd 产物无结果，hhc.exe 产物有结果）
 [ ] 点击搜索结果能打开对应正文
 [ ] 中文标题不乱码，页面内链正常

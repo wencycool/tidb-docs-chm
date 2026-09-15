@@ -919,12 +919,47 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 """
 
 
+# CHM 内部字符串表（#TOPICS/#STRINGS：搜索结果标题、收藏夹名称、主题名）按
+# ANSI 代码页存储：chmcmd 会把页面 <title> 的原始字节**原样**抄进去
+# （htmlindexer.pas: `if IsTitle then FDocTitle := Words`），hh.exe 再按系统
+# ANSI（简体中文 = GBK）显示。标题若写成 UTF-8 字节，搜索结果就会整列乱码，
+# 而目录树（来自 GBK 的 toc.hhc）又是正常的。
+# 因此 <title> 单独按 ANSI 写，正文仍是 UTF-8 + BOM，阅读器按 BOM/meta 解码，
+# 不受影响。
+CHM_TITLE_ENCODINGS = {"zh": "gbk", "en": "cp1252"}
+PAGE_TITLE_TOKEN = "%%CHM-PAGE-TITLE%%"
+
+
+def page_bytes(html_text: str, title: str, lang: str = "zh") -> bytes:
+    """把页面转成写入 CHM 的字节：正文 UTF-8，<title> 按 ANSI 代码页。"""
+    data = html_text.encode("utf-8")
+    marker = PAGE_TITLE_TOKEN.encode("ascii")
+    if marker in data:
+        encoding = CHM_TITLE_ENCODINGS.get(lang, "gbk")
+        # 目标代码页装不下的字符（如 emoji）只影响主题标题，正文不受影响
+        data = data.replace(marker, title.encode(encoding, "replace"))
+    return data
+
+
+def page_title_bytes(data: bytes) -> bytes | None:
+    """取出页面 <title> 的原始字节，没有 <title> 时返回 None。"""
+    m = re.search(rb"<title[^>]*>(.*?)</title>", data, re.S | re.I)
+    return m.group(1) if m else None
+
+
 def wrap_page(title: str, body: str, css: str = "style.css",
-              lang: str = "en", source_ref: str = "", build_date: str = "") -> str:
+              lang: str = "en", source_ref: str = "", build_date: str = "",
+              chm_title: bool = False) -> str:
+    """套上页面模板。
+
+    chm_title=True 时 <title> 写占位符，由 page_bytes() 按 CHM 的 ANSI 代码页
+    填入（见 CHM_TITLE_ENCODINGS）：chmcmd 会把 <title> 的原始字节直接抄进
+    #TOPICS/#STRINGS，而 hh.exe 的"搜索结果"列表按系统 ANSI 显示这些字符串。
+    """
     version = source_ref[len("release-"):] if source_ref.startswith("release-") else ""
     return PAGE_TEMPLATE.format(
         lang=lang,
-        title=html_lib.escape(title),
+        title=PAGE_TITLE_TOKEN if chm_title else html_lib.escape(title),
         css=css,
         body=body,
         version_label=f" / v{html_lib.escape(version)}" if version else "",
@@ -1462,6 +1497,8 @@ def main() -> int:
         except json.JSONDecodeError:
             print("      [警告] variables.json 解析失败，跳过模板变量替换")
     pages: dict[str, bytes] = {}
+    # CHM 内页面 -> 文档标题：构建结束时逐页核对 <title> 的字节编码
+    page_titles: dict[str, str] = {}
     raw_map = git_read_many(repo, doc_paths)
     link_index = build_link_index(doc_paths, raw_map)
     included = set(doc_paths)
@@ -1482,8 +1519,11 @@ def main() -> int:
         html_body = finalize_html(render_callouts(md_to_html(body, code_blocks)))
         title = meta.get("title") or os.path.basename(path)[:-3].replace("-", " ").title()
         page = wrap_page(title, html_body, lang=args.lang,
-                         source_ref=source_ref, build_date=build_date)
-        pages[html_name_for_doc(path)] = page.encode("utf-8")
+                         source_ref=source_ref, build_date=build_date,
+                         chm_title=True)
+        name_in_chm = html_name_for_doc(path)
+        pages[name_in_chm] = page_bytes(page, title, args.lang)
+        page_titles[name_in_chm] = title
     print(f"      移除视频嵌入 {stats['videos']} 处，省略图片 {stats['images']} 张")
     print(f"      模板变量替换 {stats['vars']} 处"
           + (f"，未知变量 {stats['vars_unknown']}" if stats["vars_unknown"] else ""))
@@ -1528,17 +1568,20 @@ def main() -> int:
     print(f"      构建日期 {build_date}（页脚；可用 SOURCE_DATE_EPOCH 覆盖）")
     doc_count = sum(1 for k in pages if k.endswith(".html"))
     cover = build_cover(args.title, entries, doc_count, note=media_note)
-    pages["index.html"] = wrap_page(
-        args.title, cover, source_ref=source_ref, build_date=build_date
-    ).encode("utf-8")
+    pages["index.html"] = page_bytes(
+        wrap_page(args.title, cover, source_ref=source_ref,
+                  build_date=build_date, chm_title=True),
+        args.title, args.lang)
     license_body = """<h1>许可与说明</h1>
 <p>本文档内容来源于 PingCAP 官方中文文档仓库 <code>pingcap/docs-cn</code>。</p>
 <p>TiDB 文档内容采用 CC BY-SA 3.0 许可；离线版本仅调整排版、链接、媒体资源和 CHM 打包结构。</p>
 <p>构建工具代码采用 MIT 许可。详细条款请参见项目仓库中的 <code>LICENSE</code> 文件。</p>"""
-    pages["license.html"] = wrap_page("许可与说明", license_body,
-                                      lang=args.lang,
-                                      source_ref=source_ref,
-                                      build_date=build_date).encode("utf-8")
+    pages["license.html"] = page_bytes(
+        wrap_page("许可与说明", license_body, lang=args.lang,
+                  source_ref=source_ref, build_date=build_date, chm_title=True),
+        "许可与说明", args.lang)
+    page_titles["index.html"] = args.title
+    page_titles["license.html"] = "许可与说明"
     pages["style.css"] = build_css(render_opts.body_font_size).encode("utf-8")
     pages["preview.html"] = build_preview(
         args.title, entries, len(pages), args.chm, render_opts.nav_font_size
@@ -1693,6 +1736,22 @@ def main() -> int:
               f"{system_font} != {render_opts.nav_default_font}", file=sys.stderr)
         return 1
     print(f"      Windows 导航字体校验 OK：{system_font}")
+    # CHM 的主题表（搜索结果标题）由 chmcmd 从页面 <title> 原样抄字节，
+    # 因此标题必须是 ANSI(GBK) 而不是 UTF-8，否则 hh.exe 里整列乱码。
+    # 注意不能靠"是不是合法 UTF-8"判断：GBK 字节有时恰好也是合法 UTF-8
+    # （例如 "SQL 模式" 的 GBK 字节 \xc4\xa3\xca\xbd），只能与期望值逐字节比对。
+    title_encoding = CHM_TITLE_ENCODINGS.get(args.lang, "gbk")
+    bad_titles = sorted(
+        name for name, title in page_titles.items()
+        if page_title_bytes(pages[name])
+        != title.encode(title_encoding, "replace")
+    )
+    if bad_titles:
+        print(f"      [失败] 这些页面的 <title> 不是 ANSI({title_encoding}) 字节，"
+              f"hh.exe 的搜索结果标题会乱码：{bad_titles[:3]}", file=sys.stderr)
+        return 1
+    print(f"      Windows 搜索结果标题编码校验 OK：{len(page_titles)} 个页面的 "
+          f"<title> 均为 ANSI({title_encoding}) 字节")
     hygiene_ok = True
     if keyword_index_entries:
         hygiene_ok = False
